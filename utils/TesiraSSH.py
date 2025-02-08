@@ -51,7 +51,16 @@ class TesiraSSH:
         self.blocks = {}        # All DSP blocks and types (available after connection & discovery)
 
         # Go into main loop
-        self.__loop()
+        self.__thread = Thread(target = self.__loop)
+        self.__thread.daemon = True
+        self.__thread.start()
+
+    @property
+    def connected(self):
+        """
+        Accessor for connected flag
+        """
+        return bool(self.__connected)
 
     def __connect(self):
         """
@@ -101,15 +110,9 @@ class TesiraSSH:
             _aliases = self.__syncCommand("SESSION get aliases\n").split("[")[1].split("]")[0].strip()
             aliases = list(re.findall('"([^"]*)"', _aliases))
 
-            # Now figure out their types
+            # Discover DSP blocks to figure out what they (and their attributes) are
             for o in tqdm.tqdm(aliases, desc = "Discovering DSP blocks"):
-                _ir = self.__syncCommand(f"{o} get BLOCKTYPE", rtn = "-ERR")
-                blockInterface = _ir.split(" ")[-1]
-                if "::Attributes" in blockInterface:
-                    blockInterface = str(blockInterface).replace("Interface::Attributes", "").strip()
-                    self.blocks[o] = {
-                        "type" : blockInterface
-                    }
+                self.blocks[o] = self.__discoverDSPBlockAttribute(o)
 
             # Fire setup commands from list
             for cmd in self.__setupCommands:
@@ -142,6 +145,54 @@ class TesiraSSH:
 
         # If we're here, timeout happened :(
         raise Exception(f"Synchronous command timed out: {cmd}")
+
+    def __discoverDSPBlockAttribute(self, blockName : str):
+        """
+        Given a DSP block name, discover attributes and return...
+        """
+
+        # Quick input formatting functions
+        def getValue(inp):
+            return str(inp).split(":")[-1].replace('"', "").strip()
+
+        # What will be returned?
+        rData = {
+            "supported" : False,
+            "type" : "unknown"
+        }
+
+        # First, we want to get block type
+        _ir = self.__syncCommand(f"{blockName} get BLOCKTYPE", rtn = "-ERR")
+        blockInterface = _ir.split(" ")[-1]
+
+        # Hmm, this isn't even provided, so probably an unsupported interface
+        if "::Attributes" not in blockInterface:
+            return rData
+
+        # Figure out block interface type
+        bType = str(blockInterface).replace("Interface::Attributes", "").strip()
+        rData["type"] = bType
+
+        # Now, given block interface types, we can figure out what to query from here
+        # to get specific attributes. We can also set the "supported" flag which will
+        # let the front-end API consumers know if this is currently supported or not
+
+        # Level and mute control
+        if bType in ["LevelControl", "MuteControl"]:
+
+            rData["supported"] = True                                                                   # definitely supported
+            rData["ganged"] = bool("true" in self.__syncCommand(f"{blockName} get ganged"))             # ganged controls?
+
+            # Channel information
+            chanCount = int(self.__syncCommand(f"{blockName} get numChannels").split(":")[-1].strip())  # how many channels?
+            rData["channels"] = {}
+            for i in range(1, chanCount + 1):
+                rData["channels"][i] = {
+                    "idx" : i,                                                                          # channel index
+                    "label" : getValue(self.__syncCommand(f"{blockName} get label {i}"))                # channel label
+                }
+
+        return rData
 
     def write(self, cmd):
         """
