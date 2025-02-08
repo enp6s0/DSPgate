@@ -13,18 +13,17 @@ class SSH(TesiraConnectionHandle):
             username : str,             # Username
             password : str,             # Password
             port : int = 22,            # SSH port
-            debug : bool = False,       # debug mode?
         ):
 
         # Init base stuff
-        super().__init__(debug = debug)
+        super().__init__()
 
         # Connection parameters
         self.__hostname = hostname
         self.__username = username
         self.__password = password
         self.__port = int(port)
-        self.debugPrint(f"hostname = '{self.__hostname}', port = '{self.__port}', username = '{self.__username}'")
+        self.logger.debug(f"hostname = '{self.__hostname}', port = '{self.__port}', username = '{self.__username}'")
 
         # Internal states and variables
         self.__connected = False
@@ -65,13 +64,13 @@ class SSH(TesiraConnectionHandle):
         # Connect and start a terminal session
         self.__session.connect(self.__hostname, self.__port, username = self.__username, password = self.__password, timeout = self.initialConnectionTimeout)
         self.__connection = self.__session.invoke_shell()
-        self.debugPrint(f"starting")
+        self.logger.debug(f"starting")
 
         # Try to connect and wait until we either get the welcome text, or reached
         # timeout limitations, whichever comes first
         __connInit = time.perf_counter()
         welcomed = False
-        self.debugPrint(f"waiting for session establishment")
+        self.logger.info(f"waiting for session establishment")
         while time.perf_counter() - __connInit < self.initialConnectionTimeout:
             if self.__connection.active:
                 time.sleep(0.1)
@@ -87,14 +86,14 @@ class SSH(TesiraConnectionHandle):
             self.__connected = False
         else:
             # Connection OK :)
-            self.debugPrint(f"Tesira text protocol session established ({time.perf_counter() - __connInit} sec)")
+            self.logger.info(f"Tesira text protocol session established ({time.perf_counter() - __connInit} sec)")
             self.__connected = True
 
     def __loop(self):
         """
         Main loop (runs as a thread forever until told to exit)
         """
-        self.debugPrint("entering main loop")
+        self.logger.debug("entering main loop")
 
         while not self.__exit.is_set():
             try:
@@ -112,7 +111,7 @@ class SSH(TesiraConnectionHandle):
             except Exception as e:
                 # Oh no
                 self.__connected = False
-                self.debugPrint(f"ERROR: {e}")
+                self.logger.error(f"ERROR: {e}")
 
                 # Wait a bit before we reconnect
                 time.sleep(1)
@@ -139,6 +138,7 @@ class SSH(TesiraConnectionHandle):
         """
         Send data to device
         """
+        self.logger.debug(f"send: {data}")
         if self.__connected and self.__connection.active:
             self.__connection.send(f"{data}\n")
         else:
@@ -148,6 +148,7 @@ class SSH(TesiraConnectionHandle):
         """
         Send data and wait for response
         """
+        self.logger.debug(f"send_wait: {data}")
         self.send(data)
         commandSent = time.perf_counter()
         while time.perf_counter() - commandSent < self.commandTimeout:

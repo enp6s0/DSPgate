@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 from threading import Thread, Event
-import time, sys
+import time, sys, logging
 
 class TesiraConnectionHandle:
     """
     Connection handle class, so we can (theoretically) handle multiple transports in the future,
     be it SSH, Telnet, or RS-232. Initially, only SSH is supported
     """
-    def __init__(self, debug : bool = False):
+    def __init__(self):
 
         self.transport = None          # connection object
 
@@ -21,17 +21,9 @@ class TesiraConnectionHandle:
         self.initialConnectionTimeout = 10      # initial connection timeout
         self.commandTimeout = 5                 # command level timeout
 
-        # Debug mode?
-        self.__debug = bool(debug)
+        # Logger
+        self.logger = logging.getLogger(__name__)
     
-    def debugPrint(self, msg):
-        """
-        Debug-print helper that only prints stuff out if debug mode is enabled
-        """
-        caller = sys._getframe(1).f_globals["__name__"]
-        if self.__debug:
-            print(f"[DBG][{caller}] {msg}")
-
     @property
     def active(self):
         """
