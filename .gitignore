@@ -1,6 +1,11 @@
 # Configuration file
 config.yaml
 
+# Cached files
+.cache/
+*.cached
+*.cdspblk
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

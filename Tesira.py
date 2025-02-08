@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from utils.TesiraConnectionHandle import *
-import sys, re, pprint
+import sys, re, pprint, json, pathlib
 
 class Tesira:
     """
@@ -105,7 +105,30 @@ class Tesira:
         # This step will take a long time - we query ALL DSP blocks and their attributes. To save time,
         # this can be optionally cached in cases where the configuration is expected to be static
         self.__dspBlocks = {}
-        if dspAttributesFile is None:
+
+        # If cached attributes file is specified:
+        cacheLoadSuccess = False
+        if dspAttributesFile is not None:
+            try:
+                self.__debugPrint(f"trying DSP attributes file: {dspAttributesFile}")
+
+                with open(dspAttributesFile, "r") as f:
+                    dspAF = json.load(f)
+
+                    # Make sure hostname and firmware version matches
+                    assert dspAF["hostname"] == self.__hostname, "hostname mismatch"
+                    assert dspAF["firmware"] == self.__version, "firmware version mismatch"
+                    assert dspAF["nAliases"] == len(self.__dspAliases), "alias count mismatch"
+
+                    self.__dspBlocks = dspAF["blocks"]
+                    self.__debugPrint("DSP attributes loaded from cache file")
+                    cacheLoadSuccess = True
+
+            except Exception as e:
+                self.__debugPrint(f"cached DSP attribute file load exception: {e}")
+
+        if dspAttributesFile is None or (not cacheLoadSuccess):
+            self.__debugPrint("DSP attributes will be queried from device (this may take a while)")
 
             # Traverse all DSP blocks and discover types
             for i, blockID in enumerate(self.__dspAliases):
@@ -152,11 +175,19 @@ class Tesira:
                             "label" : chanLabel
                         }
                     self.__dspBlocks[blockID]["channels"] = channels
-            
-        else:
-            # TODO: implement DSP attribute caching/loading to speed up initialization for cases where
-            # we know the DSP configuration isn't getting changed willy-nilly
-            raise Exception("TODO!")
 
-        # HACK: DEBUG
-        pprint.pprint(self.__dspBlocks)
+            # Save DSP block information in the cache directory
+            pathlib.Path(".cache").mkdir(parents = True, exist_ok = True)
+            with open(f".cache/{self.__hostname}.cdspblk", "w") as f:
+                json.dump({
+                    "blocks" : self.__dspBlocks,
+                    "hostname" : self.__hostname,
+                    "firmware" : self.__version,
+                    "nAliases" : len(self.__dspAliases)
+                }, f, indent = 4)
+            self.__debugPrint(f"DSP attributes saved: {self.__hostname}.cdspblk")
+
+            # Done!
+            self.__debugPrint("DSP attributes loaded from device")
+
+        # Now we can start subscription to get notified whenever something changes
