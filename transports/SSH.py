@@ -103,6 +103,8 @@ class SSH(TesiraConnectionHandle):
                 
                 # That's just about it, everything else will be called by the higher level
                 # handler, so we don't need to handle reading in here (yay!)
+                # (we do want to be somewhat gentle on the CPU usage though)
+                time.sleep(0.2)
 
             except KeyboardInterrupt:
                 print("keyboard interrupt received, exiting...")
