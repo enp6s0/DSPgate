@@ -96,8 +96,7 @@ class TesiraSSH:
         else:
             # Connection OK :)
             print(f"Tesira text protocol session established ({time.perf_counter() - __connInit} sec)")
-            self.__connected = True
-
+            
             # Get all block aliases (we'll then call them DSP objects...)
             _aliases = self.__syncCommand("SESSION get aliases\n").split("[")[1].split("]")[0].strip()
             aliases = list(re.findall('"([^"]*)"', _aliases))
@@ -115,9 +114,10 @@ class TesiraSSH:
             # Fire setup commands from list
             for cmd in self.__setupCommands:
                 if cmd != "":
-                    self.__connection.send(f"{cmd}\n")
+                    self.write(cmd)
                     print(f"\t... setup command: {cmd}")
     
+            self.__connected = True
             print("Session setup complete")
 
     def __syncCommand(self, cmd : str, rtn : str = "+OK"):
@@ -130,7 +130,7 @@ class TesiraSSH:
         where we (ab)use error responses, for example to find out what
         block type they are...
         """
-        self.__connection.send(f"{cmd}\n")
+        self.write(cmd)
         commandSent = time.perf_counter()
         while time.perf_counter() - commandSent < self.__sshCommandTimeout:
             time.sleep(0.1)
@@ -142,6 +142,12 @@ class TesiraSSH:
 
         # If we're here, timeout happened :(
         raise Exception(f"Synchronous command timed out: {cmd}")
+
+    def write(self, cmd):
+        """
+        Write command to device
+        """
+        self.__connection.send(f"{cmd}\n")
 
     def __read(self):
         """

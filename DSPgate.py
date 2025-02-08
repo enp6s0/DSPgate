@@ -15,7 +15,6 @@ if __name__ == "__main__":
                     port = int(config["connection"]["port"]),
                     username = config["connection"]["username"],
                     password = config["connection"]["password"],
-                    setupCommands = [], 
                     callback = [
                         gotSomething,
                     ])
