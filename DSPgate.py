@@ -15,7 +15,7 @@ if __name__ == "__main__":
                     port = int(config["connection"]["port"]),
                     username = config["connection"]["username"],
                     password = config["connection"]["password"],
-                    setupCommands = ["MainMixLevel subscribe level 1 test"], 
+                    setupCommands = [], 
                     callback = [
                         gotSomething,
                     ])

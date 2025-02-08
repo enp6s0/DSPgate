@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import paramiko, time
+import paramiko, time, re, tqdm
 from threading import Thread, Event
 
 class TesiraSSH:
@@ -26,8 +26,9 @@ class TesiraSSH:
 
         # Hardcoded stuff
         self.__sshInitTimeout = 10                                                  # SSH initialization timeout (seconds)
+        self.__sshCommandTimeout = 5                                                # SSH command timeout (seconds)
         self.__sshWelcomeText = "Welcome to the Tesira Text Protocol Server..."     # Text to wait for to confirm channel is up
-        self.__sshReadBufferSize = 1024                                             # SSH buffer size
+        self.__sshReadBufferSize = 4096                                             # SSH buffer size
 
         # Callback sanity checks
         assert type(setupCommands) == list
@@ -45,6 +46,9 @@ class TesiraSSH:
         self.__connected = False
         self.__session = None
         self.__connection = None
+
+        # Useful stuff
+        self.blocks = {}        # All DSP blocks and types (available after connection & discovery)
 
         # Go into main loop
         self.__loop()
@@ -94,6 +98,20 @@ class TesiraSSH:
             print(f"Tesira text protocol session established ({time.perf_counter() - __connInit} sec)")
             self.__connected = True
 
+            # Get all block aliases (we'll then call them DSP objects...)
+            _aliases = self.__syncCommand("SESSION get aliases\n").split("[")[1].split("]")[0].strip()
+            aliases = list(re.findall('"([^"]*)"', _aliases))
+
+            # Now figure out their types
+            for o in tqdm.tqdm(aliases, desc = "Discovering DSP blocks"):
+                _ir = self.__syncCommand(f"{o} get BLOCKTYPE", rtn = "-ERR")
+                blockInterface = _ir.split(" ")[-1]
+                if "::Attributes" in blockInterface:
+                    blockInterface = str(blockInterface).replace("Interface::Attributes", "").strip()
+                    self.blocks[o] = {
+                        "type" : blockInterface
+                    }
+
             # Fire setup commands from list
             for cmd in self.__setupCommands:
                 if cmd != "":
@@ -101,6 +119,29 @@ class TesiraSSH:
                     print(f"\t... setup command: {cmd}")
     
             print("Session setup complete")
+
+    def __syncCommand(self, cmd : str, rtn : str = "+OK"):
+        """
+        Wrapper function for SYNCHRONOUS command processor. Note:
+        must NOT be used in the main loop, since this assumes we're doing
+        ONLY one thing at a time and there are no subscriptions going on yet!
+
+        It does allow for a return type to be specified, as we have cases
+        where we (ab)use error responses, for example to find out what
+        block type they are...
+        """
+        self.__connection.send(f"{cmd}\n")
+        commandSent = time.perf_counter()
+        while time.perf_counter() - commandSent < self.__sshCommandTimeout:
+            time.sleep(0.1)
+            if self.__connection.recv_ready():
+                received = str(self.__connection.recv(self.__sshReadBufferSize).decode()).strip()
+                for line in received.splitlines():
+                    if line.startswith(rtn):
+                        return str(line[len(rtn):]).strip()
+
+        # If we're here, timeout happened :(
+        raise Exception(f"Synchronous command timed out: {cmd}")
 
     def __read(self):
         """
@@ -113,10 +154,9 @@ class TesiraSSH:
 
                     # Receive the data and perform stripping so downstream functions have 
                     # something really nice to work with
-                    received = self.__connection.recv(self.__sshReadBufferSize).decode()
-                    received = str(received).strip()
+                    received = str(self.__connection.recv(self.__sshReadBufferSize).decode()).strip()
 
-                    # Fire callback
+                    # Fire callbacks
                     for func in self.__callback:
                         func(received)
 
