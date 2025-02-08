@@ -65,12 +65,13 @@ class SSH(TesiraConnectionHandle):
         # Connect and start a terminal session
         self.__session.connect(self.__hostname, self.__port, username = self.__username, password = self.__password, timeout = self.initialConnectionTimeout)
         self.__connection = self.__session.invoke_shell()
-        self.debugPrint(f"connected")
+        self.debugPrint(f"starting")
 
         # Try to connect and wait until we either get the welcome text, or reached
         # timeout limitations, whichever comes first
         __connInit = time.perf_counter()
         welcomed = False
+        self.debugPrint(f"waiting for session establishment")
         while time.perf_counter() - __connInit < self.initialConnectionTimeout:
             if self.__connection.active:
                 time.sleep(0.1)
@@ -82,7 +83,7 @@ class SSH(TesiraConnectionHandle):
         
         if not welcomed:
             # Uh oh, we didn't get a valid response from the DSP
-            raise Exception(f"timeout waiting for protocol establishment")
+            raise Exception(f"timeout waiting for session establishment")
             self.__connected = False
         else:
             # Connection OK :)
