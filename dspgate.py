@@ -77,6 +77,15 @@ def dspMustBeReady(m):
         if not dsp.ready:
             return jsonify({"error": "DSP not ready"}), 500
 
+# DSP information
+@dspMustBeReady
+@app.route("/dsp", methods = ["GET"])
+def getDSPInfo():
+    """
+    Get DSP info (mainly firmware version and hostname)
+    """
+    return jsonify(dsp.info), 200
+
 # Get all blocks
 @dspMustBeReady
 @app.route("/block", methods = ["GET"])

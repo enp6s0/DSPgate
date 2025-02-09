@@ -179,6 +179,16 @@ class Tesira:
         return
 
     @property
+    def info(self):
+        """
+        Accessor for DSP information
+        """
+        return {
+            "hostname" : self.__hostname,
+            "version" : self.__version
+        }
+
+    @property
     def ready(self):
         """
         Accessor for ready state (also available publicly)
