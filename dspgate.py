@@ -67,6 +67,7 @@ def landing():
         "time" : int(time.time())
     }), 200
 
+# DSP-ready decorator
 def dspMustBeReady(m):
     """
     Wrapper function to ensure that the DSP is ready before
