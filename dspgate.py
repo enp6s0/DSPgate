@@ -104,7 +104,7 @@ def getBlockInfo(blockID: str):
 
 # Set attribute of a specific block
 @dspMustBeReady
-@app.route("/block/<string:blockID>", methods = ["POST", "PUT", "PATCH"])
+@app.route("/block/<string:blockID>", methods = ["POST", "PATCH"])
 def setBlockAttribute(blockID: str):
     """
     Set attribute on a specific block
