@@ -31,6 +31,7 @@ class TesiraConnectionHandle:
         """
         return False
 
+    @property
     def recv_ready(self):
         """
         Data ready in read buffer?

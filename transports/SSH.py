@@ -25,6 +25,10 @@ class SSH(TesiraConnectionHandle):
         self.__port = int(port)
         self.logger.debug(f"hostname = '{self.__hostname}', port = '{self.__port}', username = '{self.__username}'")
 
+        # Stop Paramiko from flooding the terminal with its debug messages
+        # (we typically don't have to debug that deep...)
+        logging.getLogger("paramiko.transport").setLevel(logging.INFO)
+
         # Internal states and variables
         self.__connected = False
         self.__session = None
@@ -35,6 +39,9 @@ class SSH(TesiraConnectionHandle):
         self.__thread = Thread(target = self.__loop)
         self.__thread.daemon = True
         self.__thread.start()
+
+        # Done!
+        return
 
     @property
     def active(self):
@@ -118,6 +125,7 @@ class SSH(TesiraConnectionHandle):
                 # Wait a bit before we reconnect
                 time.sleep(1)
 
+    @property
     def recv_ready(self):
         """
         Data ready in read buffer?
@@ -146,6 +154,8 @@ class SSH(TesiraConnectionHandle):
         else:
             raise Exception("device not ready")
 
+        return
+
     def send_wait(self, data):
         """
         Send data and wait for response
@@ -161,15 +171,22 @@ class SSH(TesiraConnectionHandle):
 
         # If we're here, timeout happened :(
         raise Exception(f"command timeout: {cmd}")
+        return
 
     def close(self):
         """
         Close device connection and kill thread
         """
+        # Wait for thread to exit
         self.__exit.set()
+        self.__thread.join()
         
+        # Close connection and session if possible
         if self.__connection and not self.__connection.closed:
             self.__connection.close()
 
         if self.__session:
             self.__session.close()
+
+        # Done!
+        return

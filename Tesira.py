@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from utils.TesiraConnectionHandle import *
+from threading import Thread, Event
 import sys, re, pprint, json, pathlib, logging
 
 class Tesira:
@@ -21,6 +22,9 @@ class Tesira:
         """
         # Logger
         self.logger = logging.getLogger(__name__)
+
+        # Exit event
+        self.__exit = Event()
 
         # Backend connection (calling this will also start it)
         self.__connection = connection
@@ -75,7 +79,7 @@ class Tesira:
             for i, blockID in enumerate(self.__dspAliases):
 
                 # Intentionally send an invalid command to get interface info
-                _, _, resp =  self.__parseResponse(self.__connection.send_wait(f"{blockID} get BLOCKTYPE"))
+                _, _, resp =  self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get BLOCKTYPE"))
                 resp = resp.split(" ")[-1].strip()
 
                 if "::Attributes" not in resp:
@@ -102,15 +106,15 @@ class Tesira:
                     self.__dspBlocks[blockID]["supported"] = True
 
                     # Ganged controls?
-                    _, _, self.__dspBlocks[blockID]["ganged"] = self.__parseResponse(self.__connection.send_wait(f"{blockID} get ganged"))
+                    _, _, self.__dspBlocks[blockID]["ganged"] = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get ganged"))
                     self.__dspBlocks[blockID]["ganged"] = bool("true" in self.__dspBlocks[blockID]["ganged"])
 
                     # Channel info
-                    _, _, chanCount = self.__parseResponse(self.__connection.send_wait(f"{blockID} get numChannels"))
+                    _, _, chanCount = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get numChannels"))
                     chanCount = int(chanCount)
                     channels = {}
                     for i in range(1, chanCount + 1):
-                        _, _, chanLabel = self.__parseResponse(self.__connection.send_wait(f"{blockID} get label {i}"))
+                        _, _, chanLabel = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get label {i}"))
                         channels[i] = {
                             "idx" : i,
                             "label" : chanLabel
@@ -131,15 +135,118 @@ class Tesira:
             # Done!
             self.logger.info("DSP attributes loaded from device")
 
+        # Now we transition into asynchronous (ish) mode, starting the receiver callback 
+        # that constantly reads and parses incoming data from the DSP
+        self.__readThread = Thread(target = self.__readLoop)
+        self.__readThread.daemon = True
+        self.__readThread.start()
+
         # Now we can start subscription to get notified whenever something changes
         self.logger.debug("starting subscriptions")
+        for blockID, blockAttribute in self.__dspBlocks.items():
 
+            # Subscribe to current level for levelControl
+            if blockAttribute["type"] == "LevelControl":
+                self.__connection.send(self.__getSubscribeCommand(blockID, "levels"))
+                self.__connection.send(self.__getSubscribeCommand(blockID, "mutes"))
+                self.logger.debug(f"level subscription: {blockID}")
+            
+            # Subscribe to mute states for muteControl
+            elif blockAttribute["type"] == "MuteControl":
+                self.__connection.send(self.__getSubscribeCommand(blockID, "mutes"))
+                self.logger.debug(f"mute state subscription: {blockID}")   
+
+        # Done!
+        return
+
+    def close(self):
+        """
+        Gracefully stop operations
+        """
+
+        # Set exit flag and wait for read thread to terminate
+        self.__exit.set()
+        self.__readThread.join()
+
+        # Stop backend connection
+        self.__connection.close()
+
+        # Done!
+        return
+
+    # Supported subscription types and their prefix IDs,
+    # such that we can decode them later
+    __subscriptionTypeIDs = {
+        "levels" : "LVLA",
+        "mutes" : "MUTA",
+    }
+
+    def __getSubscribeCommand(self, blockID, subscribeType):
+        """
+        Return subscribe command for specific value types in blockID.
+        Also handles prefixing of subscription IDs so the type can
+        be parsed later on
+
+        Note: Tesira IDs can only contain letters, numerals, hyphens, 
+              underscores, and spaces
+        """
+        stid = self.__subscriptionTypeIDs[subscribeType]
+        return f"\"{blockID}\" subscribe {subscribeType} \"S_{stid}_{blockID}\""
+
+    def __getSubscriptionTypeBySTID(self, stid):
+        """
+        Given subscription type ID string, get the actual type key (first match)
+        """
+        for i, v in self.__subscriptionTypeIDs.items():
+            if v == stid:
+                return i
+
+        raise Exception(f"STID match failed: {stid}")
+
+    def __readLoop(self):
+        """
+        Read loop / receiving thread
+        Gets and processes data returned from the transport channel as they come in
+        (may not synchronously match up with commands sent...)
+        """
+        self.logger.debug("read loop init")
+        while not self.__exit.is_set():
+            if self.__connection.active and self.__connection.recv_ready:
+                # Hey, we got something here
+                buf = self.__connection.recv(self.__connection.readBufferSize)
+                parseOK, msgType, msgData = self.__parseResponse(buf)
+                self.logger.debug(f"rx loop got data [{parseOK}][{msgType}]: {msgData}")
+
+            # Throttle this to 10Hz to reduce CPU consumption
+            time.sleep(0.1)
+
+        # Done?
+        self.logger.debug("read loop terminated")
+        return
 
     def __parseResponse(self, resp):
         """
         Helper function to parse and extract response from the Tesira Text Protocol
         """
         _validResponsePrefixes = ["+OK", "-ERR"]
+
+        # Embedded inner function to detect a value's type and convert if necessary
+        # (i.e., separate floats, strings, and booleans)
+        def valFormat(v):
+            v = str(v).strip()
+            try:
+                # First try to return as a float
+                return float(v)
+            except ValueError:
+                # No? Then this is either a bool or string,
+                # let's figure out what it is. A bool?
+                if v.lower() in ["true", "yes", "on"]:
+                    return True
+                elif v.lower() in ["false", "no", "off"]:
+                    return False
+                else:
+                    # Nope, this is just a string
+                    return v
 
         line = None
         returnType = None
@@ -170,17 +277,57 @@ class Tesira:
 
             if dType == "value":
                 # Straight value type
-                return True, returnType, str(dValue.replace('"', '')).strip()
+                return True, returnType, valFormat(str(dValue.replace('"', '')))
 
             elif dType == "list":
                 # List type (needs a bit of parsing)
                 items = list(re.findall('"([^"]*)"', dValue.split("[", 1)[1].split("]", 1)[0].strip()))
-                return True, returnType, list(items)
+                return True, returnType, [valFormat(i) for i in items]
 
             else:
                 # What is this?!?
                 self.logger.warning(f"unknown OK response data type: {dType} -> {line}")
                 return True, returnType, line
+
+        # If we get a subscription response, the return will need a bit more parsing
+        # as we also need to handle publishToken and list of values
+        elif returnType == "subscription":
+
+            rData = {}
+            keyvals = list(re.findall("(\[.*?\]|\".*?\"):(\[.*?\]|\".*?\")", line))
+
+            for item in keyvals:
+                assert len(item) == 2, f"Returned item match error: {keyvals} has item with invalid length {len(item)}"
+                key = str(item[0]).replace("\"", "").strip()
+
+                # Is return value a list?
+                if "[" in str(item[1]):
+                    value = list(str(item[1]).replace("\"", "").replace("[", "").replace("]", "").strip().split(" "))
+                    value = [valFormat(i) for i in value]
+                else:
+                    value = valFormat(str(item[1]).replace("\"", ""))
+
+                rData[key] = value
+
+            # publishToken will need a bit more formatting, considering there may be a prefix code
+            assert "publishToken" in rData, f"Subscription callback data with no publish token: {line}"
+
+            # PublishToken should have the prefix "S_{4 character code}_{block id}"
+            # we extract it from here
+            rt = rData["publishToken"]
+            assert rt.startswith("S_"), f"Non-prefixed subscription callback: {rt}"
+            rt = rt.split("_", 2)
+            
+            subscriptionTypeID = str(rt[1]).strip()
+            dspBlockID = str(rt[2]).strip()
+            assert len(subscriptionTypeID) == 4, f"Invalid subscription type ID in callback: {subscriptionTypeID} (for {dspBlockID})"
+            subscriptionType = self.__getSubscriptionTypeBySTID(subscriptionTypeID)
+
+            # Parsed data for easy reference
+            rData["type"] = subscriptionType
+            rData["dspBlock"] = dspBlockID
+
+            return True, returnType, rData
 
         else:
             # TODO: this needs fleshing out
