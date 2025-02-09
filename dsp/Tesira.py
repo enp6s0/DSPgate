@@ -201,7 +201,19 @@ class Tesira:
         self.__readThread.start()
 
         # Now we can start subscription to get notified whenever something changes
-        self.logger.debug("starting subscriptions")
+        self.__setupSubscriptions()
+
+        # Done - DSP should now be ready for operations
+        self.__ready = True
+        return
+
+    def __setupSubscriptions(self):
+        """
+        Setup subscriptions to DSP block status updates
+        """
+        self.logger.debug("setting up subscriptions")
+
+        blocks = 0
         for blockID, blockAttribute in self.__dspBlocks.items():
 
             # These block types support levels and mutes monitoring (all channels)
@@ -209,22 +221,23 @@ class Tesira:
             if blockAttribute["type"] in ["LevelControl", "DanteInput", "DanteOutput", "AudioOutput"]:
                 self.__connection.send(self.__getSubscribeCommand(blockID, "levels"))
                 self.__connection.send(self.__getSubscribeCommand(blockID, "mutes"))
+                blocks += 1
                 self.logger.debug(f"level/mute subscription: {blockID}")
             
             # Subscribe to mute states for muteControl
             elif blockAttribute["type"] == "MuteControl":
                 self.__connection.send(self.__getSubscribeCommand(blockID, "mutes"))
+                blocks += 1
                 self.logger.debug(f"mute state subscription: {blockID}")
 
             # Subscribe to USB I/O streaming and connected states
             elif blockAttribute["type"] in ["UsbInput", "UsbOutput"]:
                 self.__connection.send(self.__getSubscribeCommand(blockID, "streaming"))
                 self.__connection.send(self.__getSubscribeCommand(blockID, "connected"))
+                blocks += 1
                 self.logger.debug(f"USB subscription: {blockID}")
 
-        # Done - DSP should now be ready for operations
-        self.__ready = True
-        return
+        self.logger.info(f"subscribed to updates from {blocks} DSP blocks")
 
     @property
     def info(self):
