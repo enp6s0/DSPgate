@@ -130,7 +130,7 @@ class SSH(TesiraConnectionHandle):
         """
         Data ready in read buffer?
         """
-        if self.__connected and self.__connection.active:
+        if self.__connection and self.__connection.active:
             return self.__connection.recv_ready()
         else:
             return False

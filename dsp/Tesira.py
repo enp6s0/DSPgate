@@ -490,9 +490,6 @@ class Tesira:
                 except Exception as e:
                     self.logger.error(f"read loop exception: {e} ({traceback.format_exc()})")
 
-            # Throttle this to 20Hz to reduce CPU consumption
-            time.sleep(0.05)
-
         # Done?
         self.logger.debug("read loop terminated")
         return
