@@ -10,7 +10,7 @@
 #
 from dsp.Tesira import *
 from transports.SSH import *
-import time, os, yaml, logging
+import time, os, yaml, logging, sys
 from flask import Flask, request, jsonify
 from functools import wraps
 
@@ -20,6 +20,11 @@ DSPGATE_VERSION = "0.1.0-dev"
 # Logging configuration
 logging.basicConfig()
 logging.getLogger().setLevel(logging.INFO)
+try:
+    if sys.argv[1] == "debug":
+        logging.getLogger().setLevel(logging.DEBUG)
+except:
+    pass
 
 # Main logger
 logger = logging.getLogger("DSPgate")

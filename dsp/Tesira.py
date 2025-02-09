@@ -120,6 +120,13 @@ class Tesira:
                         _, _, self.__dspBlocks[blockID]["ganged"] = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get ganged"))
                         self.__dspBlocks[blockID]["ganged"] = bool(self.__dspBlocks[blockID]["ganged"])
 
+                    # USB blocks have connected and streaming status flags
+                    if blockType in ["UsbInput", "UsbOutput"]:
+                        self.__dspBlocks[blockID]["usb"] = {
+                            "streaming" : False,
+                            "connected" : False
+                        }
+
                     # Channel info
                     _, _, chanCount = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get numChannels"))
                     chanCount = int(chanCount)
@@ -149,12 +156,16 @@ class Tesira:
 
                         channels[i] = {
                             "idx" : i,
-                            "label" : chanLabel,
-                            "muted" : False,
+                            "label" : chanLabel
                         }
 
-                        # If level control, add level channel, and also figure out minimum and maximum levels
-                        if blockType == "LevelControl":
+                        # Mute status is mostly there, UNLESS it's a USB block (quirk, subscription impossible
+                        # and we're not just going to poll that...)
+                        if "Usb" not in blockType:
+                            channels[i]["muted"] = False
+
+                        # Blocks with level control should support current, minimum, and maximum levels
+                        if blockType in ["LevelControl", "DanteInput", "DanteOutput", "AudioOutput"]:
                             channels[i]["level"] = {
                                 "current" : -100.0
                             }
@@ -189,16 +200,23 @@ class Tesira:
         self.logger.debug("starting subscriptions")
         for blockID, blockAttribute in self.__dspBlocks.items():
 
-            # Subscribe to current level for levelControl
-            if blockAttribute["type"] == "LevelControl":
+            # These block types support levels and mutes monitoring (all channels)
+            # so we subscribe to both...
+            if blockAttribute["type"] in ["LevelControl", "DanteInput", "DanteOutput", "AudioOutput"]:
                 self.__connection.send(self.__getSubscribeCommand(blockID, "levels"))
                 self.__connection.send(self.__getSubscribeCommand(blockID, "mutes"))
-                self.logger.debug(f"level subscription: {blockID}")
+                self.logger.debug(f"level/mute subscription: {blockID}")
             
             # Subscribe to mute states for muteControl
             elif blockAttribute["type"] == "MuteControl":
                 self.__connection.send(self.__getSubscribeCommand(blockID, "mutes"))
-                self.logger.debug(f"mute state subscription: {blockID}")   
+                self.logger.debug(f"mute state subscription: {blockID}")
+
+            # Subscribe to USB I/O streaming and connected states
+            elif blockAttribute["type"] in ["UsbInput", "UsbOutput"]:
+                self.__connection.send(self.__getSubscribeCommand(blockID, "streaming"))
+                self.__connection.send(self.__getSubscribeCommand(blockID, "connected"))
+                self.logger.debug(f"USB subscription: {blockID}")
 
         # Done - DSP should now be ready for operations
         self.__ready = True
@@ -267,7 +285,7 @@ class Tesira:
         assert block is not None, f"Block does not exist: {blockID}"
 
         # Make sure block type is supported and that channel exists
-        assert block["type"] in ["LevelControl", "MuteControl"], f"Block type {block['type']} does not support muting"
+        assert block["type"] in ["LevelControl", "MuteControl", "DanteInput", "DanteOutput", "AudioOutput"], f"Block type {block['type']} does not support muting"
 
         # CHANNEL - typically, in Tesira land, it starts at 1. Here, we implement a special value of 0,
         # meaning all channels (multiple commands will be sent to make that happen)
@@ -301,7 +319,7 @@ class Tesira:
         value = float(value)
 
         # Make sure block type is supported and that channel exists
-        assert block["type"] in ["LevelControl"], f"Block type {block['type']} does not support level control"
+        assert block["type"] in ["LevelControl", "DanteInput", "DanteOutput", "AudioOutput"], f"Block type {block['type']} does not support level control"
 
         # CHANNEL - typically, in Tesira land, it starts at 1. Here, we implement a special value of 0,
         # meaning all channels (multiple commands will be sent to make that happen)
@@ -351,6 +369,8 @@ class Tesira:
     __subscriptionTypeIDs = {
         "levels" : "LVLA",
         "mutes" : "MUTA",
+        "streaming" : "USTR",
+        "connected" : "UCON",
     }
 
     def __getSubscribeCommand(self, blockID, subscribeType):
@@ -403,7 +423,6 @@ class Tesira:
                         subscriptionDSPBlockID = msgData["dspBlock"]
                         subscriptionDataType = msgData["type"]
                         subscriptionDataValue = msgData["value"]
-                        assert type(subscriptionDataValue) == list, "subscription data value not a list"
 
                         # Do we have that DSP block?
                         if subscriptionDSPBlockID in self.__dspBlocks:
@@ -411,26 +430,42 @@ class Tesira:
 
                             # Now, depending on the block type, this is processed differently
                             # Let's start with level and mute control blocks
-                            if dspBlockAttributes["type"] in ["LevelControl", "MuteControl"]:
+                            if dspBlockAttributes["type"] in ["LevelControl", "MuteControl", "DanteInput", "DanteOutput", "UsbInput", "UsbOutput", "AudioOutput"]:
 
                                 numChannels = len(dspBlockAttributes["channels"])
                                 channelIDXs = list(dspBlockAttributes["channels"].keys())
 
-                                assert len(subscriptionDataValue) == numChannels, f"{subscriptionDataType} RX channel value mismatch, got {len(subscriptionDataValue)}, expecting {numChannels}"
+                                # If subscription data value is a list, it's probably part of a multi channel
+                                # response of some sort
+                                if type(subscriptionDataValue) == list:
+                                    assert len(subscriptionDataValue) == numChannels, f"{subscriptionDataType} RX channel value mismatch, got {len(subscriptionDataValue)}, expecting {numChannels}"
 
-                                if subscriptionDataType == "mutes":
-                                    for i, muteStatus in enumerate(subscriptionDataValue):
-                                        cIDX = channelIDXs[i]
-                                        self.__dspBlocks[subscriptionDSPBlockID]["channels"][cIDX]["muted"] = bool(muteStatus)
+                                    if subscriptionDataType == "mutes":
+                                        # Another quirk with USB: "all mutes" (or actually mute status streaming)
+                                        # isn't supported, so we only really process this for non-USB items
+                                        if dspBlockAttributes["type"] not in ["UsbInput", "UsbOutput"]:
+                                            for i, muteStatus in enumerate(subscriptionDataValue):
+                                                cIDX = channelIDXs[i]
+                                                self.__dspBlocks[subscriptionDSPBlockID]["channels"][cIDX]["muted"] = bool(muteStatus)
 
-                                elif subscriptionDataType == "levels":
-                                    assert dspBlockAttributes["type"] == "LevelControl", "level RX for a mute block?!?"
-                                    for i, levelStatus in enumerate(subscriptionDataValue):
-                                        cIDX = channelIDXs[i]
-                                        self.__dspBlocks[subscriptionDSPBlockID]["channels"][cIDX]["level"]["current"] = float(levelStatus)
+                                    else:
+                                        assert dspBlockAttributes["type"] != "MuteControl", "level RX for a mute block?!?"
+                                        for i, levelStatus in enumerate(subscriptionDataValue):
+                                            cIDX = channelIDXs[i]
+                                            self.__dspBlocks[subscriptionDSPBlockID]["channels"][cIDX]["level"]["current"] = float(levelStatus)
+
+                                # Otherwise, these should be singular values
+                                elif type(subscriptionDataValue) in [str, bool]:
+
+                                    # If USB, we also monitor connected and streaming flags
+                                    if dspBlockAttributes["type"] in ["UsbInput", "UsbOutput"]:
+                                        if subscriptionDataType == "streaming":
+                                            self.__dspBlocks[subscriptionDSPBlockID]["usb"]["streaming"] = bool(subscriptionDataValue)
+                                        elif subscriptionDataType == "connected":
+                                            self.__dspBlocks[subscriptionDSPBlockID]["usb"]["connected"] = bool(subscriptionDataValue)
 
                             # Updated
-                            self.logger.info(f"attribute updated: {subscriptionDSPBlockID}: {self.__dspBlocks[subscriptionDSPBlockID]}")
+                            self.logger.info(f"{subscriptionDSPBlockID} attribute update {subscriptionDataType}: {subscriptionDataValue}")
 
                         else:
                             # Huh? This block doesn't exist?!
@@ -531,7 +566,7 @@ class Tesira:
         elif returnType == "subscription":
 
             rData = {}
-            keyvals = list(re.findall("(\[.*?\]|\".*?\"):(\[.*?\]|\".*?\")", line))
+            keyvals = list(re.findall('(\[.*?\]|"[^"]*"|[^:\s]+):(\[.*?\]|"[^"]*"|[^,\s]+)', line))
 
             for item in keyvals:
                 assert len(item) == 2, f"Returned item match error: {keyvals} has item with invalid length {len(item)}"
@@ -545,6 +580,9 @@ class Tesira:
                     value = self.__valFormat(str(item[1]).replace("\"", ""))
 
                 rData[key] = value
+
+            # This shouldn't happen?
+            assert "value" in rData, f"Subscription callback data with no data value: {line}"
 
             # publishToken will need a bit more formatting, considering there may be a prefix code
             assert "publishToken" in rData, f"Subscription callback data with no publish token: {line}"
