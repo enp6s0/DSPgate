@@ -18,11 +18,13 @@ from functools import wraps
 DSPGATE_VERSION = "0.1.0-dev"
 
 # Logging configuration
+debug = False
 logging.basicConfig()
 logging.getLogger().setLevel(logging.INFO)
 try:
     if sys.argv[1] == "debug":
         logging.getLogger().setLevel(logging.DEBUG)
+        debug = True
 except:
     pass
 
@@ -188,4 +190,4 @@ def setBlockAttribute(blockID: str):
 
 # Let's get the show rolling!
 if __name__ == "__main__":
-    app.run(debug = True)
+    app.run(debug = debug)

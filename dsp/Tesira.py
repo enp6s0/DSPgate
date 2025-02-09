@@ -419,15 +419,35 @@ class Tesira:
         (may not synchronously match up with commands sent...)
         """
         self.logger.debug("read loop init")
+
+        # RX loop buffer
+        self.__rxLoopBuffer = ""
+
         while not self.__exit.is_set():
-            if self.__connection.active and self.__connection.recv_ready:
 
-                # Try to parse incoming data
-                buf = self.__connection.recv(self.__connection.readBufferSize)
-                self.__processReceivedData(buf)
+            # Only when the connection is up will it make sense to do this
+            if self.__connection.active:
 
-            # Throttle this to 10Hz to reduce CPU consumption
-            time.sleep(0.1)
+                # Sleep a little to let Paramiko run
+                time.sleep(0.00001)
+
+                # Read from buffer until that's empty
+                while self.__connection.recv_ready:
+                    # Note: here we assume it's already decoded by the transport handler
+                    self.__rxLoopBuffer += str(self.__connection.recv(self.__connection.readBufferSize))
+
+                # If there us a newline, response has ended
+                # go through lines until we get something with either "+OK" or "-ERR"
+                # (responses) - everything else is noise
+                while "\n" in self.__rxLoopBuffer:
+                    np = self.__rxLoopBuffer.find("\n")
+                    grab = str(self.__rxLoopBuffer[:np]).strip()
+                    self.__rxLoopBuffer = self.__rxLoopBuffer[np + 1:]
+
+                    # If valid line, call RX processor to figure out what the data is
+                    # and parse accordingly
+                    if grab.startswith("+OK") or grab.startswith("+ERR") or grab.startswith("!"):
+                        self.__processReceivedData(grab)
 
         # Done?
         self.logger.debug("read loop terminated")

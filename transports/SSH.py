@@ -140,7 +140,7 @@ class SSH(TesiraConnectionHandle):
         Read data from RX buffer
         """
         if self.__connected and self.__connection.active:
-            return str(self.__connection.recv(self.readBufferSize).decode()).strip()
+            return str(self.__connection.recv(self.readBufferSize).decode())
         else:
             raise Exception("device not ready")
 
