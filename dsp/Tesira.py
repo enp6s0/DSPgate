@@ -105,22 +105,48 @@ class Tesira:
                 blockType = self.__dspBlocks[blockID]["type"]
                 self.logger.debug(f"(DSP block attribute query: {i + 1}/{len(self.__dspBlocks)}) {blockID} -> {blockType}")
                 
-                # Level and mute control blocks
-                if blockType in ["LevelControl", "MuteControl"]:
+
+                # Control blocks that supports mute/level control
+                # (LevelControl, MuteControl, Dante in/out, USB in/out)
+                # TODO: AVB and CobraNet in and out should be supported too (need to test on supported hardware)
+                if blockType in ["LevelControl", "MuteControl", "DanteInput", "DanteOutput", "UsbInput", "UsbOutput", "AudioOutput"]:
 
                     # Definitely supported
                     self.__dspBlocks[blockID]["supported"] = True
 
                     # Ganged controls?
-                    _, _, self.__dspBlocks[blockID]["ganged"] = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get ganged"))
-                    self.__dspBlocks[blockID]["ganged"] = bool(self.__dspBlocks[blockID]["ganged"])
+                    # (only supported by a subset of blocks)
+                    if blockType in ["LevelControl", "MuteControl"]:
+                        _, _, self.__dspBlocks[blockID]["ganged"] = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get ganged"))
+                        self.__dspBlocks[blockID]["ganged"] = bool(self.__dspBlocks[blockID]["ganged"])
 
                     # Channel info
                     _, _, chanCount = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get numChannels"))
                     chanCount = int(chanCount)
                     channels = {}
                     for i in range(1, chanCount + 1):
-                        _, _, chanLabel = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get label {i}"))
+
+                        # What can we query for channel name / label?
+                        # by default, it's "label"
+                        cNameQuery = "label"
+
+                        # Dante uses channelName instead of label
+                        if blockType in ["DanteInput", "DanteOutput"]:
+                            cNameQuery = "channelName"
+
+                        # Built-in & USB channels don't support labels at all (why, Biamp, why?!?)
+                        elif blockType in ["UsbInput", "UsbOutput", "AudioOutput"]:
+                            cNameQuery = False
+
+                        # Query channel name/label (if needed/possible)
+                        if cNameQuery:
+                            _, _, chanLabel = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get {cNameQuery} {i}"))
+                        else:
+                            # Some blocks don't support channel naming
+                            # so we substitute with a placeholder
+                            # to prevent downstream stuff from breaking
+                            chanLabel = f"Channel{i}"
+
                         channels[i] = {
                             "idx" : i,
                             "label" : chanLabel,
