@@ -117,8 +117,14 @@ class Tesira:
                         _, _, chanLabel = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get label {i}"))
                         channels[i] = {
                             "idx" : i,
-                            "label" : chanLabel
+                            "label" : chanLabel,
+                            "muted" : False,
                         }
+
+                        # If level control, add level channel too
+                        if blockType == "LevelControl":
+                            channels[i]["level"] = -100.0
+
                     self.__dspBlocks[blockID]["channels"] = channels
 
             # Save DSP block information in the cache directory
@@ -212,10 +218,56 @@ class Tesira:
         self.logger.debug("read loop init")
         while not self.__exit.is_set():
             if self.__connection.active and self.__connection.recv_ready:
-                # Hey, we got something here
-                buf = self.__connection.recv(self.__connection.readBufferSize)
-                parseOK, msgType, msgData = self.__parseResponse(buf)
-                self.logger.debug(f"rx loop got data [{parseOK}][{msgType}]: {msgData}")
+
+                # Try to parse incoming data
+                try:
+                    # Hey, we got something here
+                    buf = self.__connection.recv(self.__connection.readBufferSize)
+                    parseOK, msgType, msgData = self.__parseResponse(buf)
+                    self.logger.debug(f"rx data [{parseOK}][{msgType}]: {msgData}")
+
+                    # Process subscription (update states of DSP blocks)
+                    if msgType == "subscription":
+
+                        subscriptionDSPBlockID = msgData["dspBlock"]
+                        subscriptionDataType = msgData["type"]
+                        subscriptionDataValue = msgData["value"]
+                        assert type(subscriptionDataValue) == list, "subscription data value not a list"
+
+                        # Do we have that DSP block?
+                        if subscriptionDSPBlockID in self.__dspBlocks:
+                            dspBlockAttributes = self.__dspBlocks[subscriptionDSPBlockID]
+
+                            # Now, depending on the block type, this is processed differently
+                            # Let's start with level and mute control blocks
+                            if dspBlockAttributes["type"] in ["LevelControl", "MuteControl"]:
+
+                                numChannels = len(dspBlockAttributes["channels"])
+                                channelIDXs = list(dspBlockAttributes["channels"].keys())
+
+                                assert len(subscriptionDataValue) == numChannels, f"{subscriptionDataType} RX channel value mismatch, got {len(subscriptionDataValue)}, expecting {numChannels}"
+
+                                if subscriptionDataType == "mutes":
+                                    for i, muteStatus in enumerate(subscriptionDataValue):
+                                        cIDX = channelIDXs[i]
+                                        self.__dspBlocks[subscriptionDSPBlockID]["channels"][cIDX]["muted"] = bool(muteStatus)
+
+                                elif subscriptionDataType == "levels":
+                                    assert dspBlockAttributes["type"] == "LevelControl", "level RX for a mute block?!?"
+                                    for i, levelStatus in enumerate(subscriptionDataValue):
+                                        cIDX = channelIDXs[i]
+                                        self.__dspBlocks[subscriptionDSPBlockID]["channels"][cIDX]["level"] = float(levelStatus)
+
+                            # Updated
+                            self.logger.info(f"attribute updated: {subscriptionDSPBlockID}: {self.__dspBlocks[subscriptionDSPBlockID]}")
+
+                        else:
+                            # Huh? This block doesn't exist?!
+                            raise Exception(f"subscription RX for invalid block: {subscriptionDSPBlockID}")
+
+                # Hmm something bad happened
+                except Exception as e:
+                    self.logger.error(f"read loop exception: {e}")
 
             # Throttle this to 10Hz to reduce CPU consumption
             time.sleep(0.1)
