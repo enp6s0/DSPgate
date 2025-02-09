@@ -205,6 +205,65 @@ class Tesira:
 
                 rtn[blockID]["channels"] = channels
 
+            # Source selectors are entirely different, and so we handle them separately here
+            elif blockType == "SourceSelector":
+
+                # This is supported too
+                rtn[blockID]["supported"] = True
+
+                # Figure out selector geometry (input x output)?
+                # NOTE: might not correspond to actual selectable channels, in case of stereo channels!
+                _, _, numInputs = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get numInputs"))
+                _, _, numOutputs = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get numOutputs"))
+                rtn[blockID]["channelGeometry"] = {
+                    "input" : int(numInputs),
+                    "output" : int(numOutputs)
+                }
+
+                # Stereo enabled?
+                _, _, stereo = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get stereoEnable"))
+                rtn[blockID]["stereo"] = self.__valFormat(stereo)
+
+                # If stereo is enabled, then we have half the "selectable" channels
+                numChannels = int(numInputs)
+                if rtn[blockID]["stereo"]:
+                    numChannels = int(numInputs // 2)
+
+                # Now, for each source...
+                sources = {}
+                for i in range(1, numChannels + 1):
+                    _, _, label = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get label {i}"))
+                    _, _, minLevel = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get sourceMinLevel {i}"))
+                    _, _, maxLevel = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get sourceMaxLevel {i}"))
+
+                    sources[i] = {
+                        "idx" : i,
+                        "selected" : False,
+                        "label" : self.__valFormat(label),
+                        "level" : {
+                            "current" : -100.0,
+                            "minimum" : self.__valFormat(minLevel),
+                            "maximum" : self.__valFormat(maxLevel),
+                        }
+                    }
+                rtn[blockID]["sources"] = sources
+                
+                # Output level (which is always singular even in stereo mode)
+                _, _, oMinLevel = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get outputMinLevel"))
+                _, _, oMaxLevel = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get outputMaxLevel"))
+                rtn[blockID]["output"] = {
+                    "muted" : False,
+                    "level" : {
+                        "current" : -100.0,
+                        "minimum" : self.__valFormat(oMinLevel),
+                        "maximum" : self.__valFormat(oMaxLevel),
+                    }
+                }
+
+                # Currently selected source index?
+                # Note: 0 means nothing selected
+                rtn[blockID]["selected"] = 0
+
         # Save DSP block information in the cache directory
         if cache:
             pathlib.Path(".cache").mkdir(parents = True, exist_ok = True)
@@ -248,6 +307,18 @@ class Tesira:
                 self.__connection.send(self.__getSubscribeCommand(blockID, "connected"))
                 blocks += 1
                 self.logger.debug(f"USB subscription: {blockID}")
+
+            elif blockAttribute["type"] == "SourceSelector":
+                self.__connection.send(self.__getSubscribeCommand(blockID, "outputMute"))
+                self.__connection.send(self.__getSubscribeCommand(blockID, "outputLevel"))
+                self.__connection.send(self.__getSubscribeCommand(blockID, "sourceSelection"))
+
+                # Source level needs to be subscribed to on a per channel basis
+                for sidx in blockAttribute["sources"].keys():
+                    self.__connection.send(self.__getSubscribeCommand(blockID, "sourceLevel", sidx))
+
+                blocks += 1
+                self.logger.debug(f"source selector subscription: {blockID}")
 
         self.logger.info(f"subscribed to updates from {blocks} DSP blocks")
 
@@ -400,9 +471,13 @@ class Tesira:
         "mutes" : "MUTA",
         "streaming" : "USTR",
         "connected" : "UCON",
+        "outputMute" : "OMUT",
+        "sourceLevel" : "SLVL",
+        "outputLevel" : "OLVL",
+        "sourceSelection" : "SSEL",
     }
 
-    def __getSubscribeCommand(self, blockID, subscribeType):
+    def __getSubscribeCommand(self, blockID : str, subscribeType : str, optionalSubscribeChannel = None):
         """
         Return subscribe command for specific value types in blockID.
         Also handles prefixing of subscription IDs so the type can
@@ -412,7 +487,13 @@ class Tesira:
               underscores, and spaces
         """
         stid = self.__subscriptionTypeIDs[subscribeType]
-        return f"\"{blockID}\" subscribe {subscribeType} \"S_{stid}_{blockID}\""
+
+        # Subscriptions can be done on a per channel basis too, so we need to handle that
+        stchan = "" if optionalSubscribeChannel is None else f" {optionalSubscribeChannel}"
+        chanid = "ALL" if stchan == "" else str(stchan).strip()
+
+        stname = f"S_{stid}_{chanid}_{blockID}"
+        return f"\"{blockID}\" subscribe {subscribeType}{stchan} \"{stname}\""
 
     def __getSubscriptionTypeBySTID(self, stid):
         """
@@ -482,16 +563,21 @@ class Tesira:
             if msgType == "subscription":
 
                 subscriptionDSPBlockID = msgData["dspBlock"]
+                subscriptionDataChannel = msgData["channel"]
                 subscriptionDataType = msgData["type"]
                 subscriptionDataValue = msgData["value"]
 
                 # Do we have that DSP block?
                 if subscriptionDSPBlockID in self.__dspBlocks:
                     dspBlockAttributes = self.__dspBlocks[subscriptionDSPBlockID]
+                    blockType = dspBlockAttributes["type"]
+
+                    # Did we update anything as a result of this run?
+                    updated = False
 
                     # Now, depending on the block type, this is processed differently
-                    # Let's start with level and mute control blocks
-                    if dspBlockAttributes["type"] in ["LevelControl", "MuteControl", "DanteInput", "DanteOutput", "UsbInput", "UsbOutput", "AudioOutput"]:
+                    # Let's start with standard(ish?) level/mute blocks (plus USB, which is similar but has quirks)
+                    if blockType in ["LevelControl", "MuteControl", "DanteInput", "DanteOutput", "UsbInput", "UsbOutput", "AudioOutput"]:
 
                         numChannels = len(dspBlockAttributes["channels"])
                         channelIDXs = list(dspBlockAttributes["channels"].keys())
@@ -504,13 +590,13 @@ class Tesira:
                             if subscriptionDataType == "mutes":
                                 # Another quirk with USB: "all mutes" (or actually mute status streaming)
                                 # isn't supported, so we only really process this for non-USB items
-                                if dspBlockAttributes["type"] not in ["UsbInput", "UsbOutput"]:
+                                if blockType not in ["UsbInput", "UsbOutput"]:
                                     for i, muteStatus in enumerate(subscriptionDataValue):
                                         cIDX = channelIDXs[i]
                                         self.__dspBlocks[subscriptionDSPBlockID]["channels"][cIDX]["muted"] = bool(muteStatus)
 
                             else:
-                                assert dspBlockAttributes["type"] != "MuteControl", "level RX for a mute block?!?"
+                                assert blockType != "MuteControl", "level RX for a mute block?!?"
                                 for i, levelStatus in enumerate(subscriptionDataValue):
                                     cIDX = channelIDXs[i]
                                     self.__dspBlocks[subscriptionDSPBlockID]["channels"][cIDX]["level"]["current"] = float(levelStatus)
@@ -519,14 +605,48 @@ class Tesira:
                         elif type(subscriptionDataValue) in [str, bool]:
 
                             # If USB, we also monitor connected and streaming flags
-                            if dspBlockAttributes["type"] in ["UsbInput", "UsbOutput"]:
+                            if blockType in ["UsbInput", "UsbOutput"]:
                                 if subscriptionDataType == "streaming":
                                     self.__dspBlocks[subscriptionDSPBlockID]["usb"]["streaming"] = bool(subscriptionDataValue)
                                 elif subscriptionDataType == "connected":
                                     self.__dspBlocks[subscriptionDSPBlockID]["usb"]["connected"] = bool(subscriptionDataValue)
 
-                    # Updated
-                    self.logger.info(f"{subscriptionDSPBlockID} attribute update {subscriptionDataType}: {subscriptionDataValue}")
+                        # Well, something was updated
+                        updated = True
+
+                    # Then, we also handle source selector blocks
+                    elif blockType == "SourceSelector":
+
+                        # Output mute state change, easy enough
+                        if subscriptionDataType == "outputMute":
+                            self.__dspBlocks[subscriptionDSPBlockID]["output"]["muted"] = bool(subscriptionDataValue)
+                            updated = True
+                        
+                        # Output level
+                        elif subscriptionDataType == "outputLevel":
+                            self.__dspBlocks[subscriptionDSPBlockID]["output"]["level"]["current"] = float(subscriptionDataValue)
+                            updated = True
+
+                        # Source selection
+                        elif subscriptionDataType == "sourceSelection":
+                            selectedSource = int(subscriptionDataValue)
+                            self.__dspBlocks[subscriptionDSPBlockID]["selected"] = selectedSource
+                            for sidx in self.__dspBlocks[subscriptionDSPBlockID]["sources"].keys():
+                                self.__dspBlocks[subscriptionDSPBlockID]["sources"][sidx]["selected"] = bool(int(sidx) == int(selectedSource))
+                            updated = True
+
+                        # Source level (must have a channel!)
+                        elif subscriptionDataType == "sourceLevel" and subscriptionDataChannel != "ALL":
+                            channel = int(subscriptionDataChannel)
+                            if channel in self.__dspBlocks[subscriptionDSPBlockID]["sources"].keys():
+                                self.__dspBlocks[subscriptionDSPBlockID]["sources"][channel]["level"]["current"] = float(subscriptionDataValue)
+                                updated = True
+
+                    # Did we end up handling this update?
+                    if not updated:
+                        self.logger.warning(f"{subscriptionDSPBlockID} unhandled attribute update {subscriptionDataType}: {subscriptionDataValue}")
+                    else:
+                        self.logger.info(f"{subscriptionDSPBlockID} attribute update {subscriptionDataType}: {subscriptionDataValue}")
 
                 else:
                     # Huh? This block doesn't exist?!
@@ -645,16 +765,18 @@ class Tesira:
             # we extract it from here
             rt = rData["publishToken"]
             assert rt.startswith("S_"), f"Non-prefixed subscription callback: {rt}"
-            rt = rt.split("_", 2)
+            rt = rt.split("_", 3)
             
             subscriptionTypeID = str(rt[1]).strip()
-            dspBlockID = str(rt[2]).strip()
+            channelID = str(rt[2]).strip()
+            dspBlockID = str(rt[3]).strip()
             assert len(subscriptionTypeID) == 4, f"Invalid subscription type ID in callback: {subscriptionTypeID} (for {dspBlockID})"
             subscriptionType = self.__getSubscriptionTypeBySTID(subscriptionTypeID)
 
             # Parsed data for easy reference
             rData["type"] = subscriptionType
             rData["dspBlock"] = dspBlockID
+            rData["channel"] = channelID
 
             return True, returnType, rData
 
