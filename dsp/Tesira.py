@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from utils.TesiraConnectionHandle import *
 from threading import Thread, Event
-import sys, re, pprint, json, pathlib, logging
+import sys, re, pprint, json, pathlib, logging, traceback
 
 class Tesira:
     """
@@ -386,7 +386,7 @@ class Tesira:
 
                 # Hmm something bad happened
                 except Exception as e:
-                    self.logger.error(f"read loop exception: {e}")
+                    self.logger.error(f"read loop exception: {e} ({traceback.format_exc()})")
 
             # Throttle this to 10Hz to reduce CPU consumption
             time.sleep(0.1)
@@ -420,6 +420,10 @@ class Tesira:
         """
         _validResponsePrefixes = ["+OK", "-ERR"]
 
+        # If this is empty, we can't return anything...
+        if not resp or str(resp).strip() == "":
+            return False, None, None
+
         line = None
         returnType = None
 
@@ -445,8 +449,16 @@ class Tesira:
         # We got something, now if it's an "OK" response, what'd we get?
         if returnType == "ok":
 
-            dType = line.split(":", 1)[0].replace('"', '')
-            dValue = line.split(":", 1)[1].strip()
+            try:
+                dType = line.split(":", 1)[0].replace('"', '')
+                dValue = line.split(":", 1)[1].strip()
+            except IndexError:
+                # This is probably just OK (response to command?)
+                if str(line).replace("\"", "").strip() == "":
+                    return True, returnType, "cmd_response_ok"
+                else:
+                    self.logger.warning(f"cannot process OK response: {line}")
+                    return False, returnType, None
 
             if dType == "value":
                 # Straight value type
