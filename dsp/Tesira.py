@@ -193,6 +193,22 @@ class Tesira:
         assert self.ready, "DSP not ready"
         return list(self.__dspBlocks.keys())
 
+    @property
+    def supportedBlocks(self):
+        """
+        Return a list of all supported DSP blocks (as well as their types)
+        this is used for the block-get API endpoint
+        """
+        assert self.ready, "DSP not ready"
+        blocks = {}
+        for blockID, block in self.__dspBlocks.items():
+            if block["supported"]:
+                blocks[blockID] = {
+                    "type" : block["type"]
+                }
+
+        return blocks
+
     def block(self, blockID : str):
         """
         Get a specific block
