@@ -190,11 +190,11 @@ class SSH(TesiraConnectionHandle):
                 grab = str(buffer[:np]).strip()
                 buffer = buffer[np + 1:]
 
-                if grab.startswith("+OK") or grab.startswith("+ERR"):
+                if grab.startswith("+OK") or grab.startswith("-ERR"):
                     return grab
 
         # If we're here, timeout happened :(
-        raise Exception(f"command timeout: {cmd}")
+        raise Exception(f"timeout: {data}")
         return
 
     def close(self):
