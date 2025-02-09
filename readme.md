@@ -13,7 +13,50 @@ A lightweight gateway to enable HTTP-based control of Biamp Tesira DSPs (through
 
 #### Get all supported blocks: send `GET` to `/block`
 
-#### Get values: send `GET` to `/block/<blockID>`
+```
+{
+  "blocks": {
+    "LevelMainMix": {
+      "type": "LevelControl"
+    },
+    "MicMute": {
+      "type": "MuteControl"
+    }
+  }
+}
+```
+
+#### Get detailed block information (and current values): send `GET` to `/block/<blockID>`
+
+```
+{
+  "channels": {
+    "1": {
+      "idx": 1, 
+      "label": "CH L", 
+      "level": {
+        "current": -3.5, 
+        "maximum": 0.0, 
+        "minimum": -40.0
+      }, 
+      "muted": false
+    }, 
+    "2": {
+      "idx": 2, 
+      "label": "CH R", 
+      "level": {
+        "current": -3.5, 
+        "maximum": 0.0, 
+        "minimum": -40.0
+      }, 
+      "muted": false
+    }
+  }, 
+  "ganged": true, 
+  "supported": true, 
+  "type": "LevelControl"
+}
+```
 
 #### Set values: send `POST` (or `PATCH`) to `/block/<blockID>` with JSON body:
 
