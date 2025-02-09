@@ -80,118 +80,13 @@ class Tesira:
                     cacheLoadSuccess = True
 
             except Exception as e:
-                self.logger.error(f"cached DSP attribute file load exception: {e}")
+                self.logger.warning(f"cannot load cached DSP attributes: {e}")
 
+        # If there's no cached attributes file (or the load failed for any reason
+        # we query the device itself to get the latest attributes)
         if dspAttributesFile is None or (not cacheLoadSuccess):
             self.logger.info("DSP attributes will be queried from device (this may take a while)")
-
-            # Traverse all DSP blocks and discover types
-            for i, blockID in enumerate(self.__dspAliases):
-
-                # Intentionally send an invalid command to get interface info
-                _, _, resp =  self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get BLOCKTYPE"))
-                resp = resp.split(" ")[-1].strip()
-
-                if "::Attributes" not in resp:
-                    # Not a DSP block (probably device?) - SKIP
-                    continue
-
-                # Figure out block interface type
-                blockType = str(resp).replace("Interface::Attributes", "").strip()
-                self.__dspBlocks[blockID] = {
-                    "supported" : False,        # initially everything is unsupported, will be set by attribute discovery later
-                    "type" : str(blockType)         # hey, this is important!
-                }
-                self.logger.debug(f"(DSP block discovery: {i + 1}/{len(self.__dspAliases)}) {blockID} -> {blockType}")
-
-            # Now, for supported types, discover their attributes
-            for i, blockID in enumerate(self.__dspBlocks.keys()):
-                blockType = self.__dspBlocks[blockID]["type"]
-                self.logger.debug(f"(DSP block attribute query: {i + 1}/{len(self.__dspBlocks)}) {blockID} -> {blockType}")
-                
-
-                # Control blocks that supports mute/level control
-                # (LevelControl, MuteControl, Dante in/out, USB in/out)
-                # TODO: AVB and CobraNet in and out should be supported too (need to test on supported hardware)
-                if blockType in ["LevelControl", "MuteControl", "DanteInput", "DanteOutput", "UsbInput", "UsbOutput", "AudioOutput"]:
-
-                    # Definitely supported
-                    self.__dspBlocks[blockID]["supported"] = True
-
-                    # Ganged controls?
-                    # (only supported by a subset of blocks)
-                    if blockType in ["LevelControl", "MuteControl"]:
-                        _, _, self.__dspBlocks[blockID]["ganged"] = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get ganged"))
-                        self.__dspBlocks[blockID]["ganged"] = bool(self.__dspBlocks[blockID]["ganged"])
-
-                    # USB blocks have connected and streaming status flags
-                    if blockType in ["UsbInput", "UsbOutput"]:
-                        self.__dspBlocks[blockID]["usb"] = {
-                            "streaming" : False,
-                            "connected" : False
-                        }
-
-                    # Channel info
-                    _, _, chanCount = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get numChannels"))
-                    chanCount = int(chanCount)
-                    channels = {}
-                    for i in range(1, chanCount + 1):
-
-                        # What can we query for channel name / label?
-                        # by default, it's "label"
-                        cNameQuery = "label"
-
-                        # Dante uses channelName instead of label
-                        if blockType in ["DanteInput", "DanteOutput"]:
-                            cNameQuery = "channelName"
-
-                        # Built-in & USB channels don't support labels at all (why, Biamp, why?!?)
-                        elif blockType in ["UsbInput", "UsbOutput", "AudioOutput"]:
-                            cNameQuery = False
-
-                        # Query channel name/label (if needed/possible)
-                        if cNameQuery:
-                            _, _, chanLabel = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get {cNameQuery} {i}"))
-                        else:
-                            # Some blocks don't support channel naming
-                            # so we substitute with a placeholder
-                            # to prevent downstream stuff from breaking
-                            chanLabel = f"Channel{i}"
-
-                        channels[i] = {
-                            "idx" : i,
-                            "label" : chanLabel
-                        }
-
-                        # Mute status is mostly there, UNLESS it's a USB block (quirk, subscription impossible
-                        # and we're not just going to poll that...)
-                        if "Usb" not in blockType:
-                            channels[i]["muted"] = False
-
-                        # Blocks with level control should support current, minimum, and maximum levels
-                        if blockType in ["LevelControl", "DanteInput", "DanteOutput", "AudioOutput"]:
-                            channels[i]["level"] = {
-                                "current" : -100.0
-                            }
-                            _, _, minLevel = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get minLevel {i}"))
-                            _, _, maxLevel = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get maxLevel {i}"))
-                            channels[i]["level"]["minimum"] = self.__valFormat(minLevel)
-                            channels[i]["level"]["maximum"] = self.__valFormat(maxLevel)
-
-                    self.__dspBlocks[blockID]["channels"] = channels
-
-            # Save DSP block information in the cache directory
-            pathlib.Path(".cache").mkdir(parents = True, exist_ok = True)
-            with open(f".cache/{self.__hostname}.cdspblk", "w") as f:
-                json.dump({
-                    "blocks" : self.__dspBlocks,
-                    "hostname" : self.__hostname,
-                    "firmware" : self.__version,
-                    "nAliases" : len(self.__dspAliases)
-                }, f, indent = 4)
-            self.logger.debug(f"DSP attributes saved: {self.__hostname}.cdspblk")
-
-            # Done!
+            self.__dspBlocks = self.__discoverDSPBlocks(self.__dspAliases, cache = True)
             self.logger.info("DSP attributes loaded from device")
 
         # Now we transition into asynchronous (ish) mode, starting the receiver callback 
@@ -206,6 +101,123 @@ class Tesira:
         # Done - DSP should now be ready for operations
         self.__ready = True
         return
+
+    def __discoverDSPBlocks(self, aliases : dict, cache : bool = True):
+        """
+        Discover DSP blocks by querying the DSP. This takes some time, especially
+        if the DSP graph is big...
+        """
+
+        # This is our return dict
+        rtn = {}
+
+        # Traverse all DSP blocks and discover types
+        for i, blockID in enumerate(aliases):
+
+            # Intentionally send an invalid command to get interface info
+            _, _, resp =  self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get BLOCKTYPE"))
+            resp = resp.split(" ")[-1].strip()
+
+            if "::Attributes" not in resp:
+                # Not a DSP block (probably the device handle?) - SKIP
+                continue
+
+            # Figure out block interface type
+            blockType = str(resp).replace("Interface::Attributes", "").strip()
+            rtn[blockID] = {
+                "supported" : False,        # initially everything is unsupported, will be set by attribute discovery later
+                "type" : str(blockType)         # hey, this is important!
+            }
+            self.logger.debug(f"(DSP block discovery: {i + 1}/{len(aliases)}) {blockID} -> {blockType}")
+
+        # Now, for supported types, discover their attributes
+        for i, blockID in enumerate(rtn.keys()):
+            blockType = rtn[blockID]["type"]
+            self.logger.debug(f"(DSP block attribute query: {i + 1}/{len(aliases)}) {blockID} -> {blockType}")
+
+            # Control blocks that supports mute/level control
+            # (LevelControl, MuteControl, Dante in/out, USB in/out)
+            # TODO: AVB and CobraNet in and out should be supported too (need to test on supported hardware)
+            if blockType in ["LevelControl", "MuteControl", "DanteInput", "DanteOutput", "UsbInput", "UsbOutput", "AudioOutput"]:
+
+                # Definitely supported
+                rtn[blockID]["supported"] = True
+
+                # Ganged controls?
+                # (only supported by a subset of blocks)
+                if blockType in ["LevelControl", "MuteControl"]:
+                    _, _, rtn[blockID]["ganged"] = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get ganged"))
+                    rtn[blockID]["ganged"] = bool(rtn[blockID]["ganged"])
+
+                # USB blocks have connected and streaming status flags
+                if blockType in ["UsbInput", "UsbOutput"]:
+                    rtn[blockID]["usb"] = {
+                        "streaming" : False,
+                        "connected" : False
+                    }
+
+                # Channel info
+                _, _, chanCount = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get numChannels"))
+                chanCount = int(chanCount)
+                channels = {}
+                for i in range(1, chanCount + 1):
+
+                    # What can we query for channel name / label?
+                    # by default, it's "label"
+                    cNameQuery = "label"
+
+                    # Dante uses channelName instead of label
+                    if blockType in ["DanteInput", "DanteOutput"]:
+                        cNameQuery = "channelName"
+
+                    # Built-in & USB channels don't support labels at all (why, Biamp, why?!?)
+                    elif blockType in ["UsbInput", "UsbOutput", "AudioOutput"]:
+                        cNameQuery = False
+
+                    # Query channel name/label (if needed/possible)
+                    if cNameQuery:
+                        _, _, chanLabel = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get {cNameQuery} {i}"))
+                    else:
+                        # Some blocks don't support channel naming
+                        # so we substitute with a placeholder
+                        # to prevent downstream stuff from breaking
+                        chanLabel = f"Channel{i}"
+
+                    channels[i] = {
+                        "idx" : i,
+                        "label" : chanLabel
+                    }
+
+                    # Mute status is mostly there, UNLESS it's a USB block (quirk, subscription impossible
+                    # and we're not just going to poll that...)
+                    if "Usb" not in blockType:
+                        channels[i]["muted"] = False
+
+                    # Blocks with level control should support current, minimum, and maximum levels
+                    if blockType in ["LevelControl", "DanteInput", "DanteOutput", "AudioOutput"]:
+                        channels[i]["level"] = {
+                            "current" : -100.0
+                        }
+                        _, _, minLevel = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get minLevel {i}"))
+                        _, _, maxLevel = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get maxLevel {i}"))
+                        channels[i]["level"]["minimum"] = self.__valFormat(minLevel)
+                        channels[i]["level"]["maximum"] = self.__valFormat(maxLevel)
+
+                rtn[blockID]["channels"] = channels
+
+        # Save DSP block information in the cache directory
+        if cache:
+            pathlib.Path(".cache").mkdir(parents = True, exist_ok = True)
+            with open(f".cache/{self.__hostname}.cdspblk", "w") as f:
+                json.dump({
+                    "blocks" : rtn,
+                    "hostname" : self.__hostname,
+                    "firmware" : self.__version,
+                    "nAliases" : len(self.__dspAliases)
+                }, f, indent = 4)
+            self.logger.info(f"DSP attributes saved: {self.__hostname}.cdspblk")
+
+        return rtn
 
     def __setupSubscriptions(self):
         """
