@@ -107,7 +107,7 @@ class Tesira:
 
                     # Ganged controls?
                     _, _, self.__dspBlocks[blockID]["ganged"] = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get ganged"))
-                    self.__dspBlocks[blockID]["ganged"] = bool("true" in self.__dspBlocks[blockID]["ganged"])
+                    self.__dspBlocks[blockID]["ganged"] = bool(self.__dspBlocks[blockID]["ganged"])
 
                     # Channel info
                     _, _, chanCount = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get numChannels"))
@@ -121,9 +121,15 @@ class Tesira:
                             "muted" : False,
                         }
 
-                        # If level control, add level channel too
+                        # If level control, add level channel, and also figure out minimum and maximum levels
                         if blockType == "LevelControl":
-                            channels[i]["level"] = -100.0
+                            channels[i]["level"] = {
+                                "current" : -100.0
+                            }
+                            _, _, minLevel = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get minLevel {i}"))
+                            _, _, maxLevel = self.__parseResponse(self.__connection.send_wait(f"\"{blockID}\" get maxLevel {i}"))
+                            channels[i]["level"]["minimum"] = self.__valFormat(minLevel)
+                            channels[i]["level"]["maximum"] = self.__valFormat(maxLevel)
 
                     self.__dspBlocks[blockID]["channels"] = channels
 
@@ -256,7 +262,7 @@ class Tesira:
                                     assert dspBlockAttributes["type"] == "LevelControl", "level RX for a mute block?!?"
                                     for i, levelStatus in enumerate(subscriptionDataValue):
                                         cIDX = channelIDXs[i]
-                                        self.__dspBlocks[subscriptionDSPBlockID]["channels"][cIDX]["level"] = float(levelStatus)
+                                        self.__dspBlocks[subscriptionDSPBlockID]["channels"][cIDX]["level"]["current"] = float(levelStatus)
 
                             # Updated
                             self.logger.info(f"attribute updated: {subscriptionDSPBlockID}: {self.__dspBlocks[subscriptionDSPBlockID]}")
@@ -276,29 +282,30 @@ class Tesira:
         self.logger.debug("read loop terminated")
         return
 
+    def __valFormat(self, v):
+        """
+        Function that handles automatic value formatting
+        """
+        v = str(v).strip()
+        try:
+            # First try to return as a float
+            return float(v)
+        except ValueError:
+            # No? Then this is either a bool or string,
+            # let's figure out what it is. A bool?
+            if v.lower() in ["true", "yes", "on"]:
+                return True
+            elif v.lower() in ["false", "no", "off"]:
+                return False
+            else:
+                # Nope, this is just a string
+                return v
+
     def __parseResponse(self, resp):
         """
         Helper function to parse and extract response from the Tesira Text Protocol
         """
         _validResponsePrefixes = ["+OK", "-ERR"]
-
-        # Embedded inner function to detect a value's type and convert if necessary
-        # (i.e., separate floats, strings, and booleans)
-        def valFormat(v):
-            v = str(v).strip()
-            try:
-                # First try to return as a float
-                return float(v)
-            except ValueError:
-                # No? Then this is either a bool or string,
-                # let's figure out what it is. A bool?
-                if v.lower() in ["true", "yes", "on"]:
-                    return True
-                elif v.lower() in ["false", "no", "off"]:
-                    return False
-                else:
-                    # Nope, this is just a string
-                    return v
 
         line = None
         returnType = None
@@ -329,12 +336,12 @@ class Tesira:
 
             if dType == "value":
                 # Straight value type
-                return True, returnType, valFormat(str(dValue.replace('"', '')))
+                return True, returnType, self.__valFormat(str(dValue.replace('"', '')))
 
             elif dType == "list":
                 # List type (needs a bit of parsing)
                 items = list(re.findall('"([^"]*)"', dValue.split("[", 1)[1].split("]", 1)[0].strip()))
-                return True, returnType, [valFormat(i) for i in items]
+                return True, returnType, [self.__valFormat(i) for i in items]
 
             else:
                 # What is this?!?
@@ -355,9 +362,9 @@ class Tesira:
                 # Is return value a list?
                 if "[" in str(item[1]):
                     value = list(str(item[1]).replace("\"", "").replace("[", "").replace("]", "").strip().split(" "))
-                    value = [valFormat(i) for i in value]
+                    value = [self.__valFormat(i) for i in value]
                 else:
-                    value = valFormat(str(item[1]).replace("\"", ""))
+                    value = self.__valFormat(str(item[1]).replace("\"", ""))
 
                 rData[key] = value
 
