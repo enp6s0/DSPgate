@@ -53,6 +53,10 @@ class Tesira:
         _, _, self.__dspAliases = self.__parseResponse(self.__connection.send_wait("SESSION get aliases"))
         self.logger.debug(f"found {len(self.__dspAliases)} attribute aliases")
 
+        # Set verbose output (but nothing too detailed)
+        self.__connection.send_wait("SESSION set verbose true")
+        self.__connection.send_wait("SESSION set detailedResponse false")
+
         # This step will take a long time - we query ALL DSP blocks and their attributes. To save time,
         # this can be optionally cached in cases where the configuration is expected to be static
         self.__dspBlocks = {}

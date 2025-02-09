@@ -7,7 +7,7 @@ Note that this is a *work-in-progress*, and not every DSP block type is supporte
 ### What's currently supported?
 
 * DSP attributes listing
-* Mute and level adjustment on `LevelControl`, `MuteControl`, `Dante`, `USB`, and built-in output blocks
+* Mute and level adjustment on `LevelControl`, `MuteControl`, `Dante`, `USB`, and `AudioOutput` blocks
 
 ### Usage examples
 

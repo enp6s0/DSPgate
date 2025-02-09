@@ -130,7 +130,7 @@ class SSH(TesiraConnectionHandle):
         """
         Data ready in read buffer?
         """
-        if self.__connected and self.__connection.active:
+        if self.__connection and self.__connection.active:
             return self.__connection.recv_ready()
         else:
             return False
@@ -160,13 +160,38 @@ class SSH(TesiraConnectionHandle):
         """
         Send data and wait for response
         """
+
+        # If there's anything in the buffer, clear it out
+        while self.__connection.recv_ready():
+            self.logger.debug("send_wait: clearing buffer")
+            _ = self.__connection.recv(self.readBufferSize).decode()
+
+        # New receive buffer
+        buffer = ""
+
+        # Send the data/command we want
         self.send(data)
         commandSent = time.perf_counter()
+
         while time.perf_counter() - commandSent < self.commandTimeout:
-            time.sleep(0.1)
-            if self.__connection.recv_ready():
-                received = str(self.__connection.recv(self.readBufferSize).decode()).strip()
-                return received
+
+            # Sleep a little to let Paramiko run
+            time.sleep(0.00001)
+
+            # Add to buffer whenever we get something
+            while self.__connection.recv_ready():
+                buffer += str(self.__connection.recv(self.readBufferSize).decode())
+
+            # If there us a newline, response has ended
+            # go through lines until we get something with either "+OK" or "-ERR"
+            # (responses) - everything else is noise
+            while "\n" in buffer:
+                np = buffer.find("\n")
+                grab = str(buffer[:np]).strip()
+                buffer = buffer[np + 1:]
+
+                if grab.startswith("+OK") or grab.startswith("+ERR"):
+                    return grab
 
         # If we're here, timeout happened :(
         raise Exception(f"command timeout: {cmd}")
