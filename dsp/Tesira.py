@@ -213,7 +213,6 @@ class Tesira:
                 self.logger.debug(f"mute state subscription: {blockID}")
 
             # Subscribe to USB I/O streaming and connected states
-            # BUG: this is a bit unreliable, need to figure out why...
             elif blockAttribute["type"] in ["UsbInput", "UsbOutput"]:
                 self.__connection.send(self.__getSubscribeCommand(blockID, "streaming"))
                 self.__connection.send(self.__getSubscribeCommand(blockID, "connected"))
@@ -403,95 +402,81 @@ class Tesira:
         (may not synchronously match up with commands sent...)
         """
         self.logger.debug("read loop init")
-        buffer = ""
-
         while not self.__exit.is_set():
             if self.__connection.active and self.__connection.recv_ready:
 
                 # Try to parse incoming data
                 try:
                     # Hey, we got something here
-                    chunk = self.__connection.recv(self.__connection.readBufferSize)
-                    buffer += chunk
+                    buf = self.__connection.recv(self.__connection.readBufferSize)
+                    parseOK, msgType, msgData = self.__parseResponse(buf)
 
-                    # Process response once a newline is found
-                    while "\n" in buffer:
+                    # Don't process invalid stuff that we couldn't parse
+                    if not parseOK:
+                        continue
 
-                        # Extract completed line, move buffer forward
-                        newlinePosition = buffer.find("\n")
-                        bufOutput = buffer[:newlinePosition]
-                        buffer = buffer[newlinePosition + 1 :]
+                    self.logger.debug(f"rx data [{msgType}]: {msgData}")
 
-                        # If there is something valid from the extracted line, we'll want to process those...
-                        if str(bufOutput).strip() != "":
-                            parseOK, msgType, msgData = self.__parseResponse(bufOutput)
+                    # Process subscription (update states of DSP blocks)
+                    if msgType == "subscription":
 
-                            # Don't process invalid stuff that we couldn't parse
-                            if not parseOK:
-                                continue
+                        subscriptionDSPBlockID = msgData["dspBlock"]
+                        subscriptionDataType = msgData["type"]
+                        subscriptionDataValue = msgData["value"]
 
-                            self.logger.debug(f"rx data [{msgType}]: {msgData}")
+                        # Do we have that DSP block?
+                        if subscriptionDSPBlockID in self.__dspBlocks:
+                            dspBlockAttributes = self.__dspBlocks[subscriptionDSPBlockID]
 
-                            # Process subscription (update states of DSP blocks)
-                            if msgType == "subscription":
+                            # Now, depending on the block type, this is processed differently
+                            # Let's start with level and mute control blocks
+                            if dspBlockAttributes["type"] in ["LevelControl", "MuteControl", "DanteInput", "DanteOutput", "UsbInput", "UsbOutput", "AudioOutput"]:
 
-                                subscriptionDSPBlockID = msgData["dspBlock"]
-                                subscriptionDataType = msgData["type"]
-                                subscriptionDataValue = msgData["value"]
+                                numChannels = len(dspBlockAttributes["channels"])
+                                channelIDXs = list(dspBlockAttributes["channels"].keys())
 
-                                # Do we have that DSP block?
-                                if subscriptionDSPBlockID in self.__dspBlocks:
-                                    dspBlockAttributes = self.__dspBlocks[subscriptionDSPBlockID]
+                                # If subscription data value is a list, it's probably part of a multi channel
+                                # response of some sort
+                                if type(subscriptionDataValue) == list:
+                                    assert len(subscriptionDataValue) == numChannels, f"{subscriptionDataType} RX channel value mismatch, got {len(subscriptionDataValue)}, expecting {numChannels}"
 
-                                    # Now, depending on the block type, this is processed differently
-                                    # Let's start with level and mute control blocks
-                                    if dspBlockAttributes["type"] in ["LevelControl", "MuteControl", "DanteInput", "DanteOutput", "UsbInput", "UsbOutput", "AudioOutput"]:
+                                    if subscriptionDataType == "mutes":
+                                        # Another quirk with USB: "all mutes" (or actually mute status streaming)
+                                        # isn't supported, so we only really process this for non-USB items
+                                        if dspBlockAttributes["type"] not in ["UsbInput", "UsbOutput"]:
+                                            for i, muteStatus in enumerate(subscriptionDataValue):
+                                                cIDX = channelIDXs[i]
+                                                self.__dspBlocks[subscriptionDSPBlockID]["channels"][cIDX]["muted"] = bool(muteStatus)
 
-                                        numChannels = len(dspBlockAttributes["channels"])
-                                        channelIDXs = list(dspBlockAttributes["channels"].keys())
+                                    else:
+                                        assert dspBlockAttributes["type"] != "MuteControl", "level RX for a mute block?!?"
+                                        for i, levelStatus in enumerate(subscriptionDataValue):
+                                            cIDX = channelIDXs[i]
+                                            self.__dspBlocks[subscriptionDSPBlockID]["channels"][cIDX]["level"]["current"] = float(levelStatus)
 
-                                        # If subscription data value is a list, it's probably part of a multi channel
-                                        # response of some sort
-                                        if type(subscriptionDataValue) == list:
-                                            assert len(subscriptionDataValue) == numChannels, f"{subscriptionDataType} RX channel value mismatch, got {len(subscriptionDataValue)}, expecting {numChannels}"
+                                # Otherwise, these should be singular values
+                                elif type(subscriptionDataValue) in [str, bool]:
 
-                                            if subscriptionDataType == "mutes":
-                                                # Another quirk with USB: "all mutes" (or actually mute status streaming)
-                                                # isn't supported, so we only really process this for non-USB items
-                                                if dspBlockAttributes["type"] not in ["UsbInput", "UsbOutput"]:
-                                                    for i, muteStatus in enumerate(subscriptionDataValue):
-                                                        cIDX = channelIDXs[i]
-                                                        self.__dspBlocks[subscriptionDSPBlockID]["channels"][cIDX]["muted"] = bool(muteStatus)
+                                    # If USB, we also monitor connected and streaming flags
+                                    if dspBlockAttributes["type"] in ["UsbInput", "UsbOutput"]:
+                                        if subscriptionDataType == "streaming":
+                                            self.__dspBlocks[subscriptionDSPBlockID]["usb"]["streaming"] = bool(subscriptionDataValue)
+                                        elif subscriptionDataType == "connected":
+                                            self.__dspBlocks[subscriptionDSPBlockID]["usb"]["connected"] = bool(subscriptionDataValue)
 
-                                            else:
-                                                assert dspBlockAttributes["type"] != "MuteControl", "level RX for a mute block?!?"
-                                                for i, levelStatus in enumerate(subscriptionDataValue):
-                                                    cIDX = channelIDXs[i]
-                                                    self.__dspBlocks[subscriptionDSPBlockID]["channels"][cIDX]["level"]["current"] = float(levelStatus)
+                            # Updated
+                            self.logger.info(f"{subscriptionDSPBlockID} attribute update {subscriptionDataType}: {subscriptionDataValue}")
 
-                                        # Otherwise, these should be singular values
-                                        elif type(subscriptionDataValue) in [str, bool]:
-
-                                            # If USB, we also monitor connected and streaming flags
-                                            if dspBlockAttributes["type"] in ["UsbInput", "UsbOutput"]:
-                                                if subscriptionDataType == "streaming":
-                                                    self.__dspBlocks[subscriptionDSPBlockID]["usb"]["streaming"] = bool(subscriptionDataValue)
-                                                elif subscriptionDataType == "connected":
-                                                    self.__dspBlocks[subscriptionDSPBlockID]["usb"]["connected"] = bool(subscriptionDataValue)
-
-                                    # Updated
-                                    self.logger.info(f"{subscriptionDSPBlockID} attribute update {subscriptionDataType}: {subscriptionDataValue}")
-
-                                else:
-                                    # Huh? This block doesn't exist?!
-                                    raise Exception(f"subscription RX for invalid block: {subscriptionDSPBlockID}")
+                        else:
+                            # Huh? This block doesn't exist?!
+                            raise Exception(f"subscription RX for invalid block: {subscriptionDSPBlockID}")
 
                 # Hmm something bad happened
                 except Exception as e:
                     self.logger.error(f"read loop exception: {e} ({traceback.format_exc()})")
 
-            # Throttle this to 20Hz to reduce CPU consumption
-            time.sleep(0.05)
+            # Throttle this to 10Hz to reduce CPU consumption
+            time.sleep(0.1)
 
         # Done?
         self.logger.debug("read loop terminated")
