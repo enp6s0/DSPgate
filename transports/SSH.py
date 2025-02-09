@@ -160,7 +160,6 @@ class SSH(TesiraConnectionHandle):
         """
         Send data and wait for response
         """
-        self.logger.debug(f"send_wait: {data}")
         self.send(data)
         commandSent = time.perf_counter()
         while time.perf_counter() - commandSent < self.commandTimeout:

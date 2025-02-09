@@ -20,6 +20,12 @@ class Tesira:
         After this is done, it'll call another function to set up subscription
         to keep us updated on the current state of things
         """
+
+        # Ready?
+        # (DSP init takes time, so some downstream functions won't be available
+        #  until everything is initialized)
+        self.__ready = False
+
         # Logger
         self.logger = logging.getLogger(__name__)
 
@@ -168,7 +174,109 @@ class Tesira:
                 self.__connection.send(self.__getSubscribeCommand(blockID, "mutes"))
                 self.logger.debug(f"mute state subscription: {blockID}")   
 
-        # Done!
+        # Done - DSP should now be ready for operations
+        self.__ready = True
+        return
+
+    @property
+    def ready(self):
+        """
+        Accessor for ready state (also available publicly)
+        """
+        return bool(self.__ready)
+
+    @property
+    def blocks(self):
+        """
+        Return a list of all DSP blocks attached
+        """
+        assert self.ready, "DSP not ready"
+        return list(self.__dspBlocks.keys())
+
+    def block(self, blockID : str):
+        """
+        Get a specific block
+        """
+        assert self.ready, "DSP not ready"
+        
+        if blockID in self.blocks:
+            return self.__dspBlocks[blockID]
+        else:
+            # Block not found
+            self.logger.warning(f"Invalid block access attempt: {blockID}")
+            return None
+
+    def setMute(self, blockID : str, channel : int, value : bool = True):
+        """
+        Set mute attribute on a specific block/channel
+        """
+        # Make sure block exists
+        block = self.block(blockID)
+        assert block is not None, f"Block does not exist: {blockID}"
+
+        # Make sure block type is supported and that channel exists
+        assert block["type"] in ["LevelControl", "MuteControl"], f"Block type {block['type']} does not support muting"
+
+        # CHANNEL - typically, in Tesira land, it starts at 1. Here, we implement a special value of 0,
+        # meaning all channels (multiple commands will be sent to make that happen)
+        if channel == 0:
+            self.logger.debug(f"mute request for all channels of {blockID}")
+            channels = list(block["channels"].keys())
+        else:
+            self.logger.debug(f"mute request for {blockID} channel {channel}")
+            assert channel in block["channels"].keys(), f"Invalid channel {channel} for block {blockID}"
+            channels = [channel]
+
+        # Send mute command(s)
+        for c in channels:
+            self.__connection.send(f"\"{blockID}\" set mute {c} {str(value).lower()}")
+
+        # TODO: might be nice to have something here to check state changes,
+        # retry commands after a while if it hasn't been done yet, and throw
+        # an exception if command timeout has exceeded, but for now we assume it'll work
+        self.logger.info(f"set mute on {blockID}: {value}")
+        return
+
+    def setLevel(self, blockID : str, channel : int, value : float):
+        """
+        Set level attribute on a specific block/channel
+        """
+        # Make sure block exists
+        block = self.block(blockID)
+        assert block is not None, f"Block does not exist: {blockID}"
+
+        # Ensure value is a float
+        value = float(value)
+
+        # Make sure block type is supported and that channel exists
+        assert block["type"] in ["LevelControl"], f"Block type {block['type']} does not support level control"
+
+        # CHANNEL - typically, in Tesira land, it starts at 1. Here, we implement a special value of 0,
+        # meaning all channels (multiple commands will be sent to make that happen)
+        if channel == 0:
+            self.logger.debug(f"level request for all channels of {blockID}: {value}")
+            channels = list(block["channels"].keys())
+        else:
+            self.logger.debug(f"mute request for {blockID} channel {channel}: {value}")
+            assert channel in block["channels"].keys(), f"Invalid channel {channel} for block {blockID}"
+            channels = [channel]
+
+        # Send mute command(s)
+        for c in channels:
+
+            # Make sure value is valid
+            minV = float(block["channels"][c]["level"]["minimum"])
+            maxV = float(block["channels"][c]["level"]["maximum"])
+
+            if minV <= value <= maxV:
+                self.__connection.send(f"\"{blockID}\" set level {c} {value}")
+            else:
+                self.logger.warning(f"invalid level setting on {blockID} channel {channel}, must be between {minV} and {maxV}, wanted {value}")
+
+        # TODO: might be nice to have something here to check state changes,
+        # retry commands after a while if it hasn't been done yet, and throw
+        # an exception if command timeout has exceeded, but for now we assume it'll work
+        self.logger.info(f"set level on {blockID} (channels {channels}): {value}")
         return
 
     def close(self):
@@ -230,7 +338,12 @@ class Tesira:
                     # Hey, we got something here
                     buf = self.__connection.recv(self.__connection.readBufferSize)
                     parseOK, msgType, msgData = self.__parseResponse(buf)
-                    self.logger.debug(f"rx data [{parseOK}][{msgType}]: {msgData}")
+
+                    # Don't process invalid stuff that we couldn't parse
+                    if not parseOK:
+                        continue
+
+                    self.logger.debug(f"rx data [{msgType}]: {msgData}")
 
                     # Process subscription (update states of DSP blocks)
                     if msgType == "subscription":
@@ -326,6 +439,7 @@ class Tesira:
 
         # Nothing is parsed
         if line is None:
+            logging.debug(f"parseResponse no valid lines: {str(resp).strip()}")
             return False, None, None
 
         # We got something, now if it's an "OK" response, what'd we get?
