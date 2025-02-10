@@ -73,7 +73,17 @@ Set level of channels:
 {"channel": {"0" : {"level": "-10"}}}
 ```
 
-> These can also be combined to do multiple things in one request :)
+Combining multiple requests in one:
+```
+{
+  "channel": {
+    "0" : {"mute": "false"},
+    "2" : {"level" : -4.2}
+  }
+}
+```
+
+> Channels are processed in the order in which it was received (top to bottom) in case of conflicts
 
 Set source selector output mute, selected channel, and input levels:
 ```

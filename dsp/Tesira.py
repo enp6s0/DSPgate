@@ -395,12 +395,14 @@ class Tesira:
         else:
             # CHANNEL - typically, in Tesira land, it starts at 1. Here, we implement a special value of 0,
             # meaning all channels (multiple commands will be sent to make that happen)
+            blockChannels = [int(x) for x in list(block["channels"].keys())]
+
             if channel == 0:
                 self.logger.debug(f"mute request for all channels of {blockID}")
-                channels = list(block["channels"].keys())
+                channels = blockChannels
             else:
                 self.logger.debug(f"mute request for {blockID} channel {channel}")
-                assert channel in block["channels"].keys(), f"Invalid channel {channel} for block {blockID}"
+                assert int(channel) in blockChannels, f"setMute: invalid channel {channel} for block {blockID}"
                 channels = [channel]
 
             # Send mute command(s)
@@ -430,20 +432,21 @@ class Tesira:
 
         # CHANNEL - typically, in Tesira land, it starts at 1. Here, we implement a special value of 0,
         # meaning all channels (multiple commands will be sent to make that happen)
+        blockChannels = [int(x) for x in list(block["channels"].keys())]
         if channel == 0:
             self.logger.debug(f"level request for all channels of {blockID}: {value}")
-            channels = list(block["channels"].keys())
+            channels = blockChannels
         else:
             self.logger.debug(f"mute request for {blockID} channel {channel}: {value}")
-            assert channel in block["channels"].keys(), f"Invalid channel {channel} for block {blockID}"
+            assert int(channel) in blockChannels, f"setLevel: invalid channel {channel} for block {blockID}"
             channels = [channel]
 
         # Send level command(s)
         for c in channels:
 
             # Make sure value is valid
-            minV = float(block["channels"][c]["level"]["minimum"])
-            maxV = float(block["channels"][c]["level"]["maximum"])
+            minV = float(block["channels"][str(c)]["level"]["minimum"])
+            maxV = float(block["channels"][str(c)]["level"]["maximum"])
 
             if minV <= value <= maxV:
                 self.__connection.send(f"\"{blockID}\" set level {c} {value}")

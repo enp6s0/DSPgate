@@ -10,7 +10,7 @@
 #
 from dsp.Tesira import *
 from transports.SSH import *
-import time, os, yaml, logging, sys
+import time, os, yaml, logging, sys, traceback
 from flask import Flask, request, jsonify
 from functools import wraps
 
@@ -254,6 +254,7 @@ def setBlockAttribute(blockID: str):
             return jsonify({"error": f"Block type {block['type']} does not support changes"}), 400
 
     except Exception as e:
+        logger.error(f"Exception: {e} ({traceback.format_exc()})")
         return jsonify({"error": f"{e}"}), 500
 
 # Let's get the show rolling!
