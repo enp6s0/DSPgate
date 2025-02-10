@@ -1,14 +1,14 @@
 # DSPgate
 
-A lightweight gateway to enable HTTP-based control of Biamp Tesira DSPs (through its SSH connection)
+A lightweight gateway to enable HTTP-based control of Biamp Tesira DSPs (through its SSH connection).
 
-Note that this is a *work-in-progress*, and not every DSP block type is supported yet
+Note that this is a *work-in-progress*, and not every DSP block type (or every feature of a block) is supported yet!
 
 ### What's currently supported?
 
 * DSP attributes listing
 * Mute and level adjustment on `LevelControl`, `MuteControl`, `Dante`, `USB`, and `AudioOutput` blocks
-* Output mute, input level adjustment, and source selection on `SourceSelector` blocks
+* Output mute, input level adjustment, and active source selection on `SourceSelector` blocks
 
 ### Usage examples
 
@@ -61,15 +61,19 @@ Note that this is a *work-in-progress*, and not every DSP block type is supporte
 
 #### Set values: send `POST` (or `PATCH`) to `/block/<blockID>` with JSON body:
 
-Mute (or unmute) all channels (special channel `0` = all channels):
+Mute (or unmute) all channels:
 ```
 {"channel": {"0" : {"mute": "true"}}}
 ```
+
+> The special channel ID `0` is used to refer to *all channels*
 
 Set level of channels:
 ```
 {"channel": {"0" : {"level": "-10"}}}
 ```
+
+> These can also be combined to do multiple things in one request :)
 
 Set source selector output mute, selected channel, and input levels:
 ```
