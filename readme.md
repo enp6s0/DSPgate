@@ -86,7 +86,9 @@ Set source selector output mute, selected channel, and input levels:
 ```
 
 > Note: selecting channel 0 has the effect of un-selecting an option (set selection to none)
+
 > Note: to select a channel, `selected` can also be labels (first match will be used), although it's probably better to just use numerical indices
+
 > Note: input levels can be configured in two ways as shown, either directly or as a nested `current` item that matches the output data format
 
 ### License
