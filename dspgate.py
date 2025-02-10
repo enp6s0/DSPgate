@@ -148,6 +148,9 @@ def setBlockAttribute(blockID: str):
             if type(reqContent["channel"]) != dict:
                 return jsonify({"error": f"Invalid channel specification type"}), 412
 
+            # Keep track of changes to return
+            changes = []
+
             # For each channel, we process change requests
             for channel, changeRequest in reqContent["channel"].items():
 
@@ -166,6 +169,7 @@ def setBlockAttribute(blockID: str):
                     # Mute state change?
                     if changeKey in ["mute", "muted"]:
                         dsp.setMute(blockID, channel, value = True if str(changeValue).strip().lower() in ["true", "yes", "mute", "muted"] else False)
+                        changes.append(f"mute_{channel}")
 
                     # Level change, applies to just about anything but MuteControl
                     elif changeKey in ["level"]:
@@ -178,6 +182,7 @@ def setBlockAttribute(blockID: str):
                                 return jsonify({"error": f"Value change on {blockID} channel {channel}, non-numeric value received"}), 412
 
                             dsp.setLevel(blockID, channel, value = changeValue)
+                            changes.append(f"level_{channel}")
 
                         else:
                             return jsonify({"error": f"Level adjustment on unsupported block type {block['type']}"}), 412
@@ -187,7 +192,7 @@ def setBlockAttribute(blockID: str):
                         logger.warning(f"Unknown change key: {changeKey} (on {blockID})")
 
             # Once done, we return update OK
-            return jsonify({"update": "ok"}), 200
+            return jsonify({"changes": changes}), 200
 
         elif block["type"] == "SourceSelector":
 
