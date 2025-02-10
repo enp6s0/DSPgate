@@ -385,26 +385,33 @@ class Tesira:
         assert block is not None, f"Block does not exist: {blockID}"
 
         # Make sure block type is supported and that channel exists
-        assert block["type"] in ["LevelControl", "MuteControl", "DanteInput", "DanteOutput", "AudioOutput"], f"Block type {block['type']} does not support muting"
+        assert block["type"] in ["LevelControl", "MuteControl", "DanteInput", "DanteOutput", "AudioOutput", "SourceSelector"], f"Block type {block['type']} does not support muting"
 
-        # CHANNEL - typically, in Tesira land, it starts at 1. Here, we implement a special value of 0,
-        # meaning all channels (multiple commands will be sent to make that happen)
-        if channel == 0:
-            self.logger.debug(f"mute request for all channels of {blockID}")
-            channels = list(block["channels"].keys())
+        # SourceSelector has a different muting scheme (outputMute)
+        if block["type"] == "SourceSelector":
+            self.__connection.send(f"\"{blockID}\" set outputMute {str(value).lower()}")
+
+        # Otherwise it's handled on a per channel basis
         else:
-            self.logger.debug(f"mute request for {blockID} channel {channel}")
-            assert channel in block["channels"].keys(), f"Invalid channel {channel} for block {blockID}"
-            channels = [channel]
+            # CHANNEL - typically, in Tesira land, it starts at 1. Here, we implement a special value of 0,
+            # meaning all channels (multiple commands will be sent to make that happen)
+            if channel == 0:
+                self.logger.debug(f"mute request for all channels of {blockID}")
+                channels = list(block["channels"].keys())
+            else:
+                self.logger.debug(f"mute request for {blockID} channel {channel}")
+                assert channel in block["channels"].keys(), f"Invalid channel {channel} for block {blockID}"
+                channels = [channel]
 
-        # Send mute command(s)
-        for c in channels:
-            self.__connection.send(f"\"{blockID}\" set mute {c} {str(value).lower()}")
+            # Send mute command(s)
+            for c in channels:
+                self.__connection.send(f"\"{blockID}\" set mute {c} {str(value).lower()}")
 
         # TODO: might be nice to have something here to check state changes,
         # retry commands after a while if it hasn't been done yet, and throw
         # an exception if command timeout has exceeded, but for now we assume it'll work
         self.logger.info(f"set mute on {blockID}: {value}")
+
         return
 
     def setLevel(self, blockID : str, channel : int, value : float):
@@ -431,7 +438,7 @@ class Tesira:
             assert channel in block["channels"].keys(), f"Invalid channel {channel} for block {blockID}"
             channels = [channel]
 
-        # Send mute command(s)
+        # Send level command(s)
         for c in channels:
 
             # Make sure value is valid
@@ -442,11 +449,76 @@ class Tesira:
                 self.__connection.send(f"\"{blockID}\" set level {c} {value}")
             else:
                 self.logger.warning(f"invalid level setting on {blockID} channel {channel}, must be between {minV} and {maxV}, wanted {value}")
+                raise Exception("Invalid level setting")
 
         # TODO: might be nice to have something here to check state changes,
         # retry commands after a while if it hasn't been done yet, and throw
         # an exception if command timeout has exceeded, but for now we assume it'll work
         self.logger.info(f"set level on {blockID} (channels {channels}): {value}")
+        return
+
+    def setSourceSelect(self, blockID : str, source : str):
+        """
+        Set source selection (on a source selector)
+        (we first attempt to use source IDs, but if source is given
+         as a non-number, we'll try to match by label, selecting the first one)
+        """
+
+        # Make sure block exists
+        block = self.block(blockID)
+        assert block is not None, f"Block does not exist: {blockID}"
+
+        # This only works with source selectors
+        assert block["type"] == "SourceSelector", "Action only supported on SourceSelector blocks"
+
+        # Try to see if sources can be used as-is. If not, try to search by label
+        selectedSource = None
+        try:
+            selectedSource = int(source)
+        except ValueError:
+            # Hmm, source isn't a number, let's try to match
+            self.logger.debug(f"setSourceSelect got '{source}' which is not numerical")
+            for sidx, src in block["sources"].items():
+                if str(src["label"]) == str(source):
+                    selectedSource = int(sidx)
+            if not selectedSource:
+                raise ValueError(f"Non-numerical source '{source}' did not match any labels in {blockID}")
+        assert type(selectedSource) == int, "Selected source must be integer"
+
+        # Actually set it
+        self.__connection.send(f"\"{blockID}\" set sourceSelection {selectedSource}")
+        return
+
+    def setSourceLevel(self, blockID : str, source : int, value : float):
+        """
+        Set source level attribute, given a source index, for a source selector block
+        """
+        # Make sure block exists
+        block = self.block(blockID)
+        assert block is not None, f"Block does not exist: {blockID}"
+
+        # Ensure valid inputs
+        assert type(source) == int
+        assert source >= 1
+        value = float(value)
+
+        # Make sure block type is supported and that source exists
+        assert block["type"] == "SourceSelector", "Action only supported on SourceSelector blocks"
+        validSrcIdxs = [int(x) for x in list(block["sources"].keys())]
+        assert int(source) in validSrcIdxs, f"Source {source} does not exist in {blockID} (valid options: {validSrcIdxs})"
+
+        # Make sure value is within bounds
+        minV = float(block["sources"][str(source)]["level"]["minimum"])
+        maxV = float(block["sources"][str(source)]["level"]["maximum"])
+        assert minV <= value <= maxV, f"Invalid level setting, got {value}, expecting between {minV} and {maxV}"
+
+        # Send
+        self.__connection.send(f"\"{blockID}\" set sourceLevel {source} {value}")
+
+        # TODO: might be nice to have something here to check state changes,
+        # retry commands after a while if it hasn't been done yet, and throw
+        # an exception if command timeout has exceeded, but for now we assume it'll work
+        self.logger.info(f"set source level on {blockID} (source index {source}): {value}")
         return
 
     def close(self):
